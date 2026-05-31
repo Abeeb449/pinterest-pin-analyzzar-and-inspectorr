@@ -66,3 +66,91 @@ body {
   color: var(--muted);
   font-size: 0.8rem;
 }
+
+/* --- Visibility helper --- */
+.hidden { display: none !important; }
+
+/* --- Login screen --- */
+.login-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 340px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.login-sub {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.login-card input {
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1115;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.login-card input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-card button {
+  padding: 0.65rem 0.75rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-card button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.login-error {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.ghost-btn {
+  margin-left: auto;
+  padding: 0.4rem 0.75rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.ghost-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}

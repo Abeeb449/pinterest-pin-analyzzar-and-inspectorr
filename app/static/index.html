@@ -7,22 +7,43 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <h1>Pin Intelligence</h1>
-    <span id="mode-badge" class="badge" title="Outbound request mode">…</span>
-  </header>
+  <!-- Login screen (shown until authenticated) -->
+  <section id="login-view" class="login-view hidden">
+    <form id="login-form" class="login-card" autocomplete="off">
+      <h1>Pin Intelligence</h1>
+      <p class="login-sub">Enter the password to continue.</p>
+      <input
+        id="password"
+        type="password"
+        placeholder="Password"
+        autocomplete="current-password"
+        required
+      />
+      <button type="submit" id="login-btn">Log in</button>
+      <p id="login-error" class="login-error" role="alert"></p>
+    </form>
+  </section>
 
-  <main class="container">
-    <p class="scaffold-note">
-      Phase&nbsp;1 scaffold is live. Auth gate and the two tool panels
-      (pin lookup &amp; reverse image search) arrive in the next steps.
-    </p>
-  </main>
+  <!-- App screen (shown after authentication) -->
+  <section id="app-view" class="hidden">
+    <header class="topbar">
+      <h1>Pin Intelligence</h1>
+      <span id="mode-badge" class="badge" title="Outbound request mode">…</span>
+      <button id="logout-btn" class="ghost-btn" type="button">Log out</button>
+    </header>
 
-  <footer class="footer">
-    Personal competitive-research tool. Uses Pinterest's unofficial internal
-    endpoints — fragile by nature.
-  </footer>
+    <main class="container">
+      <p class="scaffold-note">
+        Authenticated. The two tool panels (pin lookup &amp; reverse image
+        search) arrive in the next steps.
+      </p>
+    </main>
+
+    <footer class="footer">
+      Personal competitive-research tool. Uses Pinterest's unofficial internal
+      endpoints — fragile by nature.
+    </footer>
+  </section>
 
   <script src="/static/app.js"></script>
 </body>
