@@ -67,6 +67,13 @@ class PinterestClient:
             headers = {
                 "User-Agent": self._user_agent,
                 "Accept-Language": "en-US,en;q=0.9",
+                # Browser-like client hints / fetch metadata. These don't defeat
+                # bot-protection on their own but make anonymous requests look
+                # less like a bare scraper.
+                "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1",
             }
             cookies: dict[str, str] = {}
             # Phase 2 lever: inject a logged-in session if configured.
@@ -177,6 +184,38 @@ class PinterestClient:
             client = await self._ensure_client()
             await self._throttle()
             return await client.get(url)
+
+    async def get_with_retry(
+        self, url: str, *, accept: str | None = None
+    ) -> httpx.Response:
+        """GET an arbitrary URL with the same throttle + backoff as the
+        resource API. Used by the fallback fetchers (oEmbed, HTML page).
+
+        Returns the final response (caller inspects status); raises
+        BlockedError only on persistent network failure.
+        """
+        async with self._lock:
+            await self.warmup()
+            client = await self._ensure_client()
+            headers = {"Accept": accept} if accept else {}
+
+            last_exc: Exception | None = None
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    await self._throttle()
+                    resp = await client.get(url, headers=headers)
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                else:
+                    if resp.status_code not in _RETRY_STATUSES:
+                        return resp
+                    last_exc = BlockedError(f"HTTP {resp.status_code}")
+
+                if attempt < _MAX_RETRIES:
+                    backoff = (2 ** attempt) + random.uniform(0, 0.5)
+                    await asyncio.sleep(backoff)
+
+            raise BlockedError(f"GET {url} failed after retries: {last_exc}")
 
 
 # Single shared instance for the app's lifetime (persistent session).

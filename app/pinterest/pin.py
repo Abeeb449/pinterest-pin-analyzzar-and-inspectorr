@@ -14,6 +14,7 @@ from app.pinterest.client import BlockedError, PinterestClient
 from app.pinterest.models import Comment, PinData
 
 PIN_RESOURCE_PATH = "/resource/PinResource/get/"
+OEMBED_URL = "https://www.pinterest.com/oembed.json"
 
 # Matches /pin/<digits>/ in a full or partial Pinterest URL.
 _PIN_ID_RE = re.compile(r"/pin/(\d+)")
@@ -332,8 +333,160 @@ def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinDa
     )
 
 
+# --------------------------------------------------------------------------- #
+# Fallback fetchers (used when the bot-protected JSON API returns 403)
+# --------------------------------------------------------------------------- #
+#
+# The internal PinResource API is the most aggressively bot-blocked surface.
+# These public/HTML surfaces are frequently reachable when it is not. They
+# return LESS data (no saves/comments/annotations), but a partial result beats
+# a hard block. Each returns a PinData or None (so the caller can keep trying).
+
+# JSON embedded in the pin's HTML page (Next.js / relay state, JSON-LD, OG tags)
+_JSONLD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+_OG_RE = {
+    "image": re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)'),
+    "title": re.compile(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)'),
+    "description": re.compile(
+        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)'
+    ),
+}
+
+
+async def fetch_pin_via_oembed(pin_id: str, client: PinterestClient) -> PinData | None:
+    """Fallback 1: Pinterest's public oEmbed endpoint.
+
+    Gives title, author (pinner) name + url, and a thumbnail. No saves/comments.
+    """
+    pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
+    url = f"{OEMBED_URL}?url={pin_url}"
+    try:
+        resp = await client.get_with_retry(url, accept="application/json")
+    except BlockedError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        d = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+
+    notes = ["source: oEmbed fallback (JSON API was blocked; saves/comments/annotations unavailable here)"]
+    author = _first(d.get("author_name"))
+    author_url = _first(d.get("author_url"))
+    return PinData(
+        pin_id=str(pin_id),
+        url=pin_url,
+        title=_first(d.get("title")),
+        image=_first(d.get("thumbnail_url")),
+        pinner_name=author,
+        pinner_url=author_url,
+        notes=notes,
+    )
+
+
+async def fetch_pin_via_html(pin_id: str, client: PinterestClient) -> PinData | None:
+    """Fallback 2: scrape the pin's public HTML page (OG tags + JSON-LD).
+
+    Gives title, description, image, and sometimes pinner. No saves/comments.
+    """
+    pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
+    try:
+        resp = await client.get_with_retry(pin_url, accept="text/html")
+    except BlockedError:
+        return None
+    if resp.status_code != 200:
+        return None
+    html = resp.text or ""
+    if not html:
+        return None
+
+    title = description = image = pinner_name = None
+
+    # Open Graph meta tags (most reliable, present on the public page)
+    for key, rx in _OG_RE.items():
+        m = rx.search(html)
+        if m:
+            val = m.group(1)
+            if key == "title":
+                title = val
+            elif key == "description":
+                description = val
+            elif key == "image":
+                image = val
+
+    # JSON-LD often carries author / creator
+    for m in _JSONLD_RE.finditer(html):
+        try:
+            ld = json.loads(m.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        blocks = ld if isinstance(ld, list) else [ld]
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            author = b.get("author")
+            if isinstance(author, dict):
+                pinner_name = pinner_name or _first(author.get("name"))
+            title = title or _first(b.get("headline"), b.get("name"))
+            description = description or _first(b.get("description"))
+
+    if not any((title, description, image)):
+        return None  # page returned but had nothing useful -> let caller decide
+
+    return PinData(
+        pin_id=str(pin_id),
+        url=pin_url,
+        title=title,
+        description=description,
+        image=image,
+        pinner_name=pinner_name,
+        notes=["source: HTML page fallback (JSON API was blocked; saves/comments/annotations unavailable here)"],
+    )
+
+
 async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
-    """High-level: resolve -> fetch -> parse into PinData."""
+    """High-level: resolve -> fetch -> parse into PinData.
+
+    Strategy ladder (each free, no account required):
+      1. Internal PinResource JSON API (richest: saves, comments, annotations).
+         Most bot-blocked surface, especially on shared datacenter IPs.
+      2. oEmbed endpoint (title, pinner, thumbnail).
+      3. Public HTML page scrape (title, description, image).
+
+    The first strategy that yields data wins. Only if ALL are blocked do we
+    raise BlockedError so the UI shows the graceful "blocked" message.
+    """
     pin_id = await resolve_pin_id(pin_input, client)
-    raw = await fetch_pin_raw(pin_id, client)
-    return parse_pin_data(raw, pin_id_hint=pin_id)
+
+    # Strategy 1: the rich JSON API.
+    primary_error: Exception | None = None
+    try:
+        raw = await fetch_pin_raw(pin_id, client)
+        pin = parse_pin_data(raw, pin_id_hint=pin_id)
+        # Treat "pin object not found" as a soft failure worth falling back on.
+        if pin.title or pin.image or pin.board_name or pin.pinner_name:
+            return pin
+        primary_error = BlockedError("JSON API returned no usable pin object")
+    except BlockedError as exc:
+        primary_error = exc
+
+    # Strategies 2 & 3: lighter public surfaces.
+    for fallback in (fetch_pin_via_oembed, fetch_pin_via_html):
+        try:
+            result = await fallback(pin_id, client)
+        except Exception:  # noqa: BLE001 - a failing fallback must not crash
+            result = None
+        if result is not None:
+            return result
+
+    # Everything was blocked.
+    raise BlockedError(
+        "All fetch methods were blocked (JSON API, oEmbed, and HTML page). "
+        f"Last API error: {primary_error}"
+    )
