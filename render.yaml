@@ -3,13 +3,14 @@ services:
     name: pinterest-pin-intelligence
     runtime: python
     plan: free
-    # Pin the Python version for reproducible builds.
-    pythonVersion: "3.11.11"
     buildCommand: pip install -r requirements.txt
     # Render injects $PORT; the app MUST bind 0.0.0.0 and that port.
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
+      # Pin the Python version for reproducible builds (also in runtime.txt).
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       # Required. Set this value in the Render dashboard (do NOT commit it).
       - key: APP_PASSWORD
         sync: false
