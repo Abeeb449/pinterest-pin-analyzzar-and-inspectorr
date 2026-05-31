@@ -39,16 +39,31 @@ async def resolve_pin_id(raw: str, client: PinterestClient) -> str:
     if m:
         return m.group(1)
 
-    # pin.it short link (or any other) -> follow redirect to the canonical URL.
+    # pin.it short link (or any other) -> resolve to the canonical pin.
+    # pin.it serves a JS/app interstitial (HTTP 200, no Location header) rather
+    # than a plain 3xx, so we check, in order: the final URL after redirects,
+    # then the response body (og:url / canonical / any /pin/<id> reference).
     if "pin.it" in raw or raw.startswith("http"):
         try:
             resp = await client.get_url(raw)
         except Exception as exc:  # noqa: BLE001 - surface as a clean error
             raise PinUrlError(f"Could not resolve link: {exc}") from exc
-        final_url = str(resp.url)
-        m = _PIN_ID_RE.search(final_url)
+
+        # 1. canonical URL after any HTTP redirects
+        m = _PIN_ID_RE.search(str(resp.url))
         if m:
             return m.group(1)
+
+        # 2. dig the pin id out of the interstitial HTML body
+        body = resp.text or ""
+        for pat in (
+            r'og:url["\'][^>]*content=["\'][^"\']*?/pin/(\d+)',
+            r'rel=["\']canonical["\'][^>]*href=["\'][^"\']*?/pin/(\d+)',
+            _PIN_ID_RE.pattern,
+        ):
+            bm = re.search(pat, body)
+            if bm:
+                return bm.group(1)
 
     raise PinUrlError("Could not find a pin id in that input.")
 
