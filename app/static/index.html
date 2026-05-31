@@ -33,10 +33,27 @@
     </header>
 
     <main class="container">
-      <p class="scaffold-note">
-        Authenticated. The two tool panels (pin lookup &amp; reverse image
-        search) arrive in the next steps.
-      </p>
+      <!-- Panel 1: Look up a pin -->
+      <section class="panel">
+        <h2>Look up a pin</h2>
+        <form id="pin-form" class="row">
+          <input
+            id="pin-url"
+            type="text"
+            placeholder="Paste a pin URL or pin.it link"
+            autocomplete="off"
+          />
+          <button type="submit" id="pin-btn">Look up</button>
+        </form>
+        <div id="pin-status" class="status" role="status"></div>
+        <div id="pin-result" class="result hidden"></div>
+      </section>
+
+      <!-- Panel 2: Find similar pins (wired in a later step) -->
+      <section class="panel">
+        <h2>Find similar pins</h2>
+        <p class="muted">Reverse image search arrives in a later step.</p>
+      </section>
     </main>
 
     <footer class="footer">

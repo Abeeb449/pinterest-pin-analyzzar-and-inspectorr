@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import auth, config
+from app.pinterest import pin as pin_mod
+from app.pinterest.client import BlockedError, close_client, get_client
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -25,6 +27,16 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 class LoginRequest(BaseModel):
     password: str
+
+
+class PinLookupRequest(BaseModel):
+    url: str
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    """Close the shared Pinterest httpx client on app shutdown."""
+    await close_client()
 
 
 @app.get("/healthz")
@@ -64,6 +76,52 @@ def session_info() -> JSONResponse:
             "authenticated": True,
             "mode": "authenticated" if config.using_pinterest_cookie() else "anonymous",
         }
+    )
+
+
+@app.post("/api/pin", dependencies=[Depends(auth.require_auth)])
+async def lookup_pin(body: PinLookupRequest) -> JSONResponse:
+    """Look up a pin's metadata.
+
+    Always returns 200 with a structured payload so the frontend can render
+    partial data + a status message instead of treating blocks as crashes.
+    """
+    raw_input = (body.url or "").strip()
+    if not raw_input:
+        return JSONResponse(
+            {"ok": False, "status": "error", "message": "Please enter a pin URL."}
+        )
+
+    client = get_client()
+    try:
+        pin_data = await pin_mod.fetch_pin(raw_input, client)
+    except pin_mod.PinUrlError as exc:
+        return JSONResponse(
+            {"ok": False, "status": "bad_input", "message": str(exc)}
+        )
+    except BlockedError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": "blocked",
+                "message": (
+                    "Pinterest blocked this request (common on free shared-IP "
+                    "hosting). Try again shortly. " + str(exc)
+                ),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - never crash the endpoint
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": "error",
+                "message": f"Unexpected error: {exc}",
+            }
+        )
+
+    # Partial success is still success; notes carry any missing-field info.
+    return JSONResponse(
+        {"ok": True, "status": "ok", "pin": pin_data.model_dump()}
     )
 
 

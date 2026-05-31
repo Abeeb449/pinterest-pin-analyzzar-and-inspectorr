@@ -1,5 +1,5 @@
-// Frontend controller: gate the app behind the password login, then show the
-// tool UI. Talks only to the same-origin API (no CORS).
+// Frontend controller: gate the app behind the password login, then drive the
+// tool panels. Talks only to the same-origin API (no CORS).
 (function () {
   "use strict";
 
@@ -12,6 +12,13 @@
   const logoutBtn = document.getElementById("logout-btn");
   const modeBadge = document.getElementById("mode-badge");
 
+  const pinForm = document.getElementById("pin-form");
+  const pinUrl = document.getElementById("pin-url");
+  const pinBtn = document.getElementById("pin-btn");
+  const pinStatus = document.getElementById("pin-status");
+  const pinResult = document.getElementById("pin-result");
+
+  // --- view + mode helpers ---
   function show(view) {
     loginView.classList.toggle("hidden", view !== "login");
     appView.classList.toggle("hidden", view !== "app");
@@ -23,7 +30,6 @@
     modeBadge.classList.add(mode);
   }
 
-  // Decide which view to show by probing the authenticated endpoint.
   async function checkSession() {
     try {
       const res = await fetch("/api/session", { credentials: "same-origin" });
@@ -34,12 +40,13 @@
         return;
       }
     } catch (_) {
-      /* fall through to login */
+      /* fall through */
     }
     show("login");
     passwordInput.focus();
   }
 
+  // --- auth ---
   async function handleLogin(event) {
     event.preventDefault();
     loginError.textContent = "";
@@ -71,14 +78,113 @@
     try {
       await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
     } catch (_) {
-      /* ignore — we clear the view regardless */
+      /* ignore */
     }
     show("login");
     passwordInput.focus();
   }
 
+  // --- pin lookup ---
+  function setStatus(kind, message) {
+    pinStatus.className = "status" + (kind ? " " + kind : "");
+    pinStatus.textContent = message || "";
+  }
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function link(href, text) {
+    if (!href) return esc(text);
+    return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+  }
+
+  function renderPin(pin) {
+    const saves = pin.saves == null ? "<em>unavailable</em>" : esc(pin.saves);
+    const reactions =
+      pin.reactions == null ? "" : `<div class="kv"><span>Reactions</span><b>${esc(pin.reactions)}</b></div>`;
+    const chips = (pin.annotations || [])
+      .map((a) => `<span class="chip">${esc(a)}</span>`)
+      .join("");
+    const comments = (pin.comments || [])
+      .map(
+        (c) =>
+          `<li><b>${esc(c.author || "anon")}</b>: ${esc(c.text || "")}</li>`
+      )
+      .join("");
+    const notes = (pin.notes || []).length
+      ? `<div class="notes">Notes: ${pin.notes.map(esc).join("; ")}</div>`
+      : "";
+
+    pinResult.innerHTML = `
+      <div class="card">
+        ${pin.image ? `<img class="card-img" src="${esc(pin.image)}" alt="" />` : ""}
+        <div class="card-body">
+          <h3>${pin.url ? link(pin.url, pin.title || "(untitled)") : esc(pin.title || "(untitled)")}</h3>
+          ${pin.description ? `<p class="desc">${esc(pin.description)}</p>` : ""}
+          <div class="kv"><span>Board</span><b>${link(pin.board_url, pin.board_name || "—")}</b></div>
+          <div class="kv"><span>Pinner</span><b>${link(pin.pinner_url, pin.pinner_name || "—")}</b></div>
+          <div class="kv"><span>Published</span><b>${esc(pin.created_at || "—")}</b></div>
+          <div class="kv"><span>Saves</span><b>${saves}</b></div>
+          ${reactions}
+          <div class="kv"><span>Comments</span><b>${esc(pin.comment_count == null ? "—" : pin.comment_count)}</b></div>
+          ${chips ? `<div class="chips">${chips}</div>` : ""}
+          ${comments ? `<ul class="comments">${comments}</ul>` : ""}
+          ${notes}
+          <button type="button" class="ghost-btn" id="copy-json">Copy JSON</button>
+        </div>
+      </div>`;
+    pinResult.classList.remove("hidden");
+
+    const copyBtn = document.getElementById("copy-json");
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(pin, null, 2));
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => (copyBtn.textContent = "Copy JSON"), 1500);
+      } catch (_) {
+        copyBtn.textContent = "Copy failed";
+      }
+    });
+  }
+
+  async function handlePinLookup(event) {
+    event.preventDefault();
+    pinResult.classList.add("hidden");
+    pinResult.innerHTML = "";
+    pinBtn.disabled = true;
+    setStatus("loading", "Looking up pin…");
+    try {
+      const res = await fetch("/api/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ url: pinUrl.value }),
+      });
+      if (res.status === 401) {
+        show("login");
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.ok && data.pin) {
+        setStatus("", "");
+        renderPin(data.pin);
+      } else {
+        const kind = data.status === "blocked" ? "blocked" : "error";
+        setStatus(kind, data.message || "Lookup failed.");
+      }
+    } catch (_) {
+      setStatus("error", "Network error. Try again.");
+    } finally {
+      pinBtn.disabled = false;
+    }
+  }
+
   loginForm.addEventListener("submit", handleLogin);
   logoutBtn.addEventListener("click", handleLogout);
+  pinForm.addEventListener("submit", handlePinLookup);
 
   checkSession();
 })();

@@ -1,8 +1,8 @@
 """Pin-detail fetch + parse.
 
-Step 3 scope: resolve a pin URL to an ID, build the PinResource request, fetch
-it anonymously, and return the RAW JSON so we can confirm true field paths
-before writing the defensive mapper in Step 4.
+resolve a pin URL to an ID, build the PinResource request, fetch it
+anonymously, and map the raw JSON -> PinData defensively (every Pinterest field
+may be missing, so nothing here may raise on absence).
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from app.pinterest.client import BlockedError, PinterestClient
+from app.pinterest.models import Comment, PinData
 
 PIN_RESOURCE_PATH = "/resource/PinResource/get/"
 
@@ -18,15 +19,27 @@ PIN_RESOURCE_PATH = "/resource/PinResource/get/"
 _PIN_ID_RE = re.compile(r"/pin/(\d+)")
 _BARE_ID_RE = re.compile(r"^\d+$")
 
+# A short body that is exactly a block marker (Pinterest edge returns "BLOCKED").
+_BLOCK_MARKERS = ("BLOCKED", "Access Denied", "Request blocked")
+
 
 class PinUrlError(ValueError):
     """The provided string is not a recognizable Pinterest pin URL/ID."""
 
 
+def _looks_blocked(status_code: int, body: str) -> bool:
+    """Heuristic: did we hit an edge block rather than a real page?"""
+    if status_code in (403, 429):
+        return True
+    head = (body or "").strip()[:64]
+    return any(marker.lower() in head.lower() for marker in _BLOCK_MARKERS)
+
+
 async def resolve_pin_id(raw: str, client: PinterestClient) -> str:
     """Extract a numeric pin id from a URL, short link, or bare id.
 
-    Handles pin.it short links by following the redirect.
+    Raises BlockedError if the short-link resolution is blocked by the edge,
+    and PinUrlError only when the input genuinely has no pin id.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -65,6 +78,14 @@ async def resolve_pin_id(raw: str, client: PinterestClient) -> str:
             if bm:
                 return bm.group(1)
 
+        # Couldn't find an id. Distinguish "blocked" from "genuinely bad link"
+        # so the UI can show an accurate message.
+        if _looks_blocked(resp.status_code, body):
+            raise BlockedError(
+                "Pinterest blocked the short-link lookup "
+                f"(HTTP {resp.status_code}). Try the full /pin/<id>/ URL."
+            )
+
     raise PinUrlError("Could not find a pin id in that input.")
 
 
@@ -78,7 +99,7 @@ def build_pin_data_param(pin_id: str) -> str:
 
 
 async def fetch_pin_raw(pin_input: str, client: PinterestClient) -> dict[str, Any]:
-    """Fetch a pin and return the parsed raw JSON (no field mapping yet).
+    """Fetch a pin and return the parsed raw JSON (no field mapping).
 
     Raises BlockedError on persistent block, PinUrlError on bad input.
     """
@@ -99,3 +120,220 @@ async def fetch_pin_raw(pin_input: str, client: PinterestClient) -> dict[str, An
         raise BlockedError(
             "Pinterest returned a non-JSON response (likely a block page)."
         ) from exc
+
+
+# --------------------------------------------------------------------------- #
+# Raw -> PinData mapping (defensive)
+# --------------------------------------------------------------------------- #
+#
+# Field paths below are HYPOTHESES from the brief, verified opportunistically
+# against the live response. Each lookup tolerates absence and records a note
+# rather than raising, so a partial/blocked response still yields a PinData.
+
+
+def _get(d: Any, *keys: str, default: Any = None) -> Any:
+    """Safe nested dict getter: _get(obj, 'a', 'b') == obj['a']['b'] or default."""
+    cur = d
+    for key in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(key)
+        if cur is None:
+            return default
+    return cur
+
+
+def _first(*values: Any, default: Any = None) -> Any:
+    """Return the first non-empty value."""
+    for v in values:
+        if v not in (None, "", [], {}):
+            return v
+    return default
+
+
+def _to_int(value: Any) -> int | None:
+    """Coerce to int only if it's a real number; never fabricate."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
+def extract_pin_object(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull the pin object out of the resource envelope."""
+    data = _get(raw, "resource_response", "data")
+    # Some responses nest the pin under data, others return it directly.
+    if isinstance(data, dict):
+        # detailed pin fetch returns the pin dict directly under data
+        if "id" in data or "type" in data:
+            return data
+        # occasionally wrapped again
+        inner = data.get("data") if isinstance(data.get("data"), dict) else None
+        if inner:
+            return inner
+    return None
+
+
+def _map_board(pin: dict[str, Any], notes: list[str]) -> tuple[str | None, str | None]:
+    board = _get(pin, "board")
+    if not isinstance(board, dict):
+        notes.append("board: unavailable")
+        return None, None
+    name = _first(board.get("name"))
+    url_path = _first(board.get("url"))
+    url = ("https://www.pinterest.com" + url_path) if url_path and url_path.startswith("/") else url_path
+    return name, url
+
+
+def _map_pinner(pin: dict[str, Any], notes: list[str]) -> tuple[str | None, str | None, str | None]:
+    # Brief hint: .native_creator / .pinner
+    creator = _first(_get(pin, "native_creator"), _get(pin, "pinner"))
+    if not isinstance(creator, dict):
+        notes.append("pinner: unavailable")
+        return None, None, None
+    name = _first(creator.get("full_name"), creator.get("username"))
+    username = _first(creator.get("username"))
+    url = ("https://www.pinterest.com/" + username + "/") if username else None
+    return name, username, url
+
+
+def _map_saves(pin: dict[str, Any], notes: list[str]) -> int | None:
+    # Brief hint: aggregated_pin_data.aggregated_stats.saves (often absent).
+    saves = _to_int(_get(pin, "aggregated_pin_data", "aggregated_stats", "saves"))
+    if saves is None:
+        # fall back to a top-level repin/save count if Pinterest exposes one
+        saves = _to_int(_first(pin.get("repin_count"), pin.get("save_count")))
+    if saves is None:
+        notes.append("saves: unavailable")  # never estimate
+    return saves
+
+
+def _map_reactions(pin: dict[str, Any]) -> int | None:
+    # Only if Pinterest actually reports reactions. No fake likes.
+    reactions = _to_int(_get(pin, "reaction_counts"))
+    if reactions is not None:
+        return reactions
+    rc = _get(pin, "reaction_counts")
+    if isinstance(rc, dict):
+        total = sum(v for v in rc.values() if isinstance(v, int))
+        return total or None
+    return _to_int(pin.get("total_reaction_count"))
+
+
+def _map_annotations(pin: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    # Brief hints: pin_join.visual_annotation / visual_objects
+    va = _get(pin, "pin_join", "visual_annotation")
+    if isinstance(va, list):
+        out.extend(str(x) for x in va if isinstance(x, (str, int)))
+    # Some payloads use a list of {name: ...} objects
+    for source in (
+        _get(pin, "pin_join", "annotations_with_links"),
+        pin.get("visual_objects"),
+    ):
+        if isinstance(source, list):
+            for item in source:
+                if isinstance(item, dict):
+                    name = _first(item.get("name"), item.get("keyword"), item.get("label"))
+                    if name:
+                        out.append(str(name))
+                elif isinstance(item, str):
+                    out.append(item)
+    # de-dup, preserve order
+    seen: set[str] = set()
+    deduped = []
+    for a in out:
+        if a not in seen:
+            seen.add(a)
+            deduped.append(a)
+    return deduped
+
+
+def _map_comments(pin: dict[str, Any]) -> tuple[int | None, list[Comment]]:
+    count = _to_int(_first(pin.get("comment_count"), _get(pin, "aggregated_pin_data", "comment_count")))
+    comments: list[Comment] = []
+    raw_comments = _first(
+        _get(pin, "comments", "data"),
+        pin.get("comments") if isinstance(pin.get("comments"), list) else None,
+        default=[],
+    )
+    if isinstance(raw_comments, list):
+        for c in raw_comments:
+            if not isinstance(c, dict):
+                continue
+            comments.append(
+                Comment(
+                    author=_first(_get(c, "user", "full_name"), _get(c, "user", "username")),
+                    text=_first(c.get("text"), c.get("comment_text")),
+                    created_at=_first(c.get("created_at")),
+                )
+            )
+    return count, comments
+
+
+def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinData:
+    """Map a raw PinResource response to PinData. Never raises on missing fields."""
+    notes: list[str] = []
+    pin = extract_pin_object(raw)
+
+    if pin is None:
+        # surface any API-level error message if present
+        err = _get(raw, "resource_response", "error")
+        if err:
+            notes.append(f"pinterest error: {err}")
+        notes.append("pin object not found in response")
+        return PinData(pin_id=pin_id_hint or "unknown", notes=notes)
+
+    pin_id = _first(pin.get("id"), pin_id_hint, default="unknown")
+    url = f"https://www.pinterest.com/pin/{pin_id}/" if pin_id != "unknown" else None
+
+    title = _first(pin.get("title"), pin.get("grid_title"))
+    description = _first(pin.get("description"), pin.get("description_html"))
+
+    image = _first(
+        _get(pin, "images", "orig", "url"),
+        _get(pin, "images", "736x", "url"),
+        _get(pin, "images", "474x", "url"),
+        _get(pin, "image_large_url"),
+    )
+
+    board_name, board_url = _map_board(pin, notes)
+    pinner_name, pinner_username, pinner_url = _map_pinner(pin, notes)
+    saves = _map_saves(pin, notes)
+    reactions = _map_reactions(pin)
+    comment_count, comments = _map_comments(pin)
+    annotations = _map_annotations(pin)
+
+    created_at = _first(pin.get("created_at"))
+
+    return PinData(
+        pin_id=str(pin_id),
+        url=url,
+        title=title,
+        description=description,
+        image=image,
+        board_name=board_name,
+        board_url=board_url,
+        pinner_name=pinner_name,
+        pinner_username=pinner_username,
+        pinner_url=pinner_url,
+        created_at=created_at,
+        saves=saves,
+        reactions=reactions,
+        comment_count=comment_count,
+        comments=comments,
+        annotations=annotations,
+        notes=notes,
+    )
+
+
+async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
+    """High-level: resolve -> fetch -> parse into PinData."""
+    pin_id = await resolve_pin_id(pin_input, client)
+    raw = await fetch_pin_raw(pin_id, client)
+    return parse_pin_data(raw, pin_id_hint=pin_id)

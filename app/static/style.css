@@ -154,3 +154,138 @@ body {
   color: var(--text);
   border-color: var(--muted);
 }
+
+/* --- Panels --- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.9rem;
+  font-size: 1.1rem;
+}
+
+.muted { color: var(--muted); }
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.row input {
+  flex: 1;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1115;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.row input:focus { outline: none; border-color: var(--accent); }
+
+.row button {
+  padding: 0.6rem 1rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.row button:disabled { opacity: 0.6; cursor: progress; }
+
+/* --- Status messages --- */
+.status {
+  margin-top: 0.75rem;
+  min-height: 1.2em;
+  font-size: 0.9rem;
+}
+.status.loading { color: var(--muted); }
+.status.error { color: var(--accent); }
+.status.blocked { color: var(--warn); }
+
+/* --- Result card --- */
+.result { margin-top: 1rem; }
+
+.card {
+  display: flex;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  background: #12151c;
+}
+
+@media (max-width: 600px) {
+  .card { flex-direction: column; }
+}
+
+.card-img {
+  width: 200px;
+  max-width: 40%;
+  border-radius: 8px;
+  object-fit: cover;
+  align-self: flex-start;
+}
+
+@media (max-width: 600px) {
+  .card-img { max-width: 100%; width: 100%; }
+}
+
+.card-body { flex: 1; min-width: 0; }
+.card-body h3 { margin: 0 0 0.5rem; }
+.card-body a { color: #7eb6ff; }
+
+.desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0 0 0.75rem;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.kv span { color: var(--muted); }
+.kv b { text-align: right; word-break: break-word; }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+.chip {
+  background: #1f2530;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.comments {
+  margin: 0.75rem 0;
+  padding-left: 1.1rem;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+.comments li { margin: 0.2rem 0; }
+
+.notes {
+  margin: 0.6rem 0;
+  font-size: 0.8rem;
+  color: var(--warn);
+}
+
+#copy-json { margin-top: 0.75rem; }
