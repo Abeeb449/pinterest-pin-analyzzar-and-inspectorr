@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: pinterest-pin-intelligence
+    runtime: python
+    plan: free
+    # Pin the Python version for reproducible builds.
+    pythonVersion: "3.11.11"
+    buildCommand: pip install -r requirements.txt
+    # Render injects $PORT; the app MUST bind 0.0.0.0 and that port.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      # Required. Set this value in the Render dashboard (do NOT commit it).
+      - key: APP_PASSWORD
+        sync: false
+      # Secret used to sign the login session cookie. Set in dashboard.
+      # Generate: python -c "import secrets; print(secrets.token_hex(32))"
+      - key: SESSION_SECRET
+        sync: false
+      # Optional (Phase 2 reliability lever). Leave UNSET for anonymous mode.
+      - key: PINTEREST_SESS_COOKIE
+        sync: false
+      - key: PINTEREST_CSRF_TOKEN
+        sync: false
