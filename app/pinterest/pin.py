@@ -133,6 +133,47 @@ async def fetch_pin_raw(pin_input: str, client: PinterestClient) -> dict[str, An
         ) from exc
 
 
+# Field set that includes pin_join.visual_annotation on the LOGGED-OUT view.
+_ANNOTATION_FIELD_SET = "unauth_react_main_pin"
+
+
+async def fetch_annotations(pin_id: str, client: PinterestClient) -> list[str]:
+    """Fetch Pinterest's ML keyword annotations via the ANONYMOUS view.
+
+    Confirmed: pin_join.visual_annotation is present on the logged-out response
+    and hidden when authenticated. This makes a cookie-free request just for
+    the annotations, so the main (authenticated) fetch stays reliable.
+
+    Best-effort: returns [] on any block/error (never raises).
+    """
+    source_url = f"/pin/{pin_id}/"
+    data = json.dumps(
+        {
+            "options": {
+                "id": pin_id,
+                "field_set_key": _ANNOTATION_FIELD_SET,
+                "add_vase": True,
+            },
+            "context": {},
+        },
+        separators=(",", ":"),
+    )
+    try:
+        resp = await client.get_resource(
+            PIN_RESOURCE_PATH, source_url=source_url, data=data, anonymous=True
+        )
+        if resp.status_code != 200:
+            return []
+        raw = resp.json()
+    except (BlockedError, json.JSONDecodeError, ValueError, Exception):  # noqa: BLE001
+        return []
+
+    pin = extract_pin_object(raw)
+    if not isinstance(pin, dict):
+        return []
+    return _map_annotations(pin)
+
+
 async def fetch_resource_raw(
     client: PinterestClient,
     resource: str,
@@ -741,35 +782,55 @@ async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
     we raise BlockedError so the UI shows the graceful "blocked" message.
     """
     pin_id = await resolve_pin_id(pin_input, client)
+    pin: PinData | None = None
 
     # Strategy 1: the rich JSON API.
     primary_error: Exception | None = None
     try:
         raw = await fetch_pin_raw(pin_id, client)
-        pin = parse_pin_data(raw, pin_id_hint=pin_id)
+        candidate = parse_pin_data(raw, pin_id_hint=pin_id)
         # Treat "pin object not found" as a soft failure worth falling back on.
-        if pin.title or pin.image or pin.board_name or pin.pinner_name:
-            return pin
-        primary_error = BlockedError("JSON API returned no usable pin object")
+        if candidate.title or candidate.image or candidate.board_name or candidate.pinner_name:
+            pin = candidate
+        else:
+            primary_error = BlockedError("JSON API returned no usable pin object")
     except BlockedError as exc:
         primary_error = exc
 
     # Strategies 2-4: embedded rich state first (best with a cookie), then the
     # thin public surfaces as a last resort.
-    for fallback in (
-        fetch_pin_via_embedded_state,
-        fetch_pin_via_oembed,
-        fetch_pin_via_html,
-    ):
-        try:
-            result = await fallback(pin_id, client)
-        except Exception:  # noqa: BLE001 - a failing fallback must not crash
-            result = None
-        if result is not None:
-            return result
+    if pin is None:
+        for fallback in (
+            fetch_pin_via_embedded_state,
+            fetch_pin_via_oembed,
+            fetch_pin_via_html,
+        ):
+            try:
+                result = await fallback(pin_id, client)
+            except Exception:  # noqa: BLE001 - a failing fallback must not crash
+                result = None
+            if result is not None:
+                pin = result
+                break
 
-    # Everything was blocked.
-    raise BlockedError(
-        "All fetch methods were blocked (JSON API, embedded state, oEmbed, "
-        f"and HTML page). Last API error: {primary_error}"
-    )
+    if pin is None:
+        # Everything was blocked.
+        raise BlockedError(
+            "All fetch methods were blocked (JSON API, embedded state, oEmbed, "
+            f"and HTML page). Last API error: {primary_error}"
+        )
+
+    # Enrich with ML keyword annotations from the ANONYMOUS view, since the
+    # authenticated response hides pin_join.visual_annotation. Best-effort: a
+    # failure here never affects the rest of the (already-fetched) pin data.
+    if not pin.annotations:
+        try:
+            annotations = await fetch_annotations(pin_id, client)
+        except Exception:  # noqa: BLE001
+            annotations = []
+        if annotations:
+            pin.annotations = annotations
+            # Drop the "ML annotations not present" note now that we have them.
+            pin.notes = [n for n in pin.notes if "ML keyword annotations" not in n]
+
+    return pin
