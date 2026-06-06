@@ -19,6 +19,7 @@ here crashes the app, and pin lookup is entirely unaffected.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.pinterest.client import BlockedError, PinterestClient
@@ -100,18 +101,19 @@ def _find_image_url(item: Any, depth: int = 0) -> str | None:
     mid-size thumbnail. Bounded depth so a big object can't blow the stack.
     """
     best: str | None = None
-    PREFERRED = ("236x", "474x", "564x", "736x")
+    # Order matters: prefer LARGER sources so tiles render sharp (236x upscaled
+    # to tile size looks blurry). 564x is a good sharp-but-light default.
+    PREFERRED = ("564x", "474x", "736x", "236x")
 
     def walk(node: Any, d: int) -> None:
         nonlocal best
-        if best and any(s in best for s in PREFERRED):
-            return  # already have a good thumbnail
+        if best:
+            return  # take the first good hit (map lookup is preferred order)
         if d > 8:
             return
         if isinstance(node, str):
             if "i.pinimg.com" in node and node.startswith("http"):
-                if best is None or any(s in node for s in PREFERRED):
-                    best = node
+                best = node
         elif isinstance(node, dict):
             # Prefer an explicit {size: {"url": ...}} images map first.
             imgs = node.get("images")
@@ -128,7 +130,33 @@ def _find_image_url(item: Any, depth: int = 0) -> str | None:
                 walk(v, d + 1)
 
     walk(item, depth)
-    return best
+    return _upgrade_size(best)
+
+
+# Pinterest thumbnails embed their size as a path segment, e.g.
+#   https://i.pinimg.com/236x/ab/cd/ef/hash.jpg
+# Rewriting that segment to a larger size yields a sharper image at tile size.
+_SIZE_SEG_RE = re.compile(r"i\.pinimg\.com/(\d+x|orig)/")
+_TARGET_SIZE = "564x"
+
+
+def _upgrade_size(url: str | None) -> str | None:
+    """Bump a small i.pinimg.com thumbnail up to a sharper size."""
+    if not url:
+        return url
+    # Don't downgrade 'orig' or already-large sizes; only upsize small ones.
+    m = _SIZE_SEG_RE.search(url)
+    if not m:
+        return url
+    seg = m.group(1)
+    if seg == "orig":
+        return url
+    try:
+        if int(seg.rstrip("x")) >= 564:
+            return url
+    except ValueError:
+        return url
+    return _SIZE_SEG_RE.sub(f"i.pinimg.com/{_TARGET_SIZE}/", url, count=1)
 
 
 async def visual_search_by_pin(
