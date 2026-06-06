@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -192,44 +192,38 @@ async def probe_resource(body: ResourceProbeRequest) -> JSONResponse:
 
 
 @app.post("/api/visual", dependencies=[Depends(auth.require_auth)])
-async def visual_search_endpoint(image: UploadFile = File(...)) -> JSONResponse:
-    """Reverse image search. ISOLATED + anonymous-first.
+async def visual_search_endpoint(body: PinLookupRequest) -> JSONResponse:
+    """Visual ('flashlight') search: find pins similar to an existing pin.
 
-    Always returns 200 with a structured payload; on any failure it reports
-    the feature as unavailable rather than crashing.
+    Verified to run as a GET by pin id (NO image upload), so it's as low-risk
+    as pin lookup. Anonymous-first. Always returns 200 with a structured
+    payload; on any failure it reports the feature unavailable, never crashes.
     """
-    content_type = (image.content_type or "").lower()
-    if not content_type.startswith("image/"):
+    raw_input = (body.url or "").strip()
+    if not raw_input:
         return JSONResponse(
-            {"ok": False, "status": "bad_input", "message": "Please upload an image file."}
-        )
-
-    image_bytes = await image.read()
-    # Guard against oversized uploads (10 MB cap).
-    if len(image_bytes) > 10 * 1024 * 1024:
-        return JSONResponse(
-            {"ok": False, "status": "bad_input", "message": "Image too large (max 10 MB)."}
-        )
-    if not image_bytes:
-        return JSONResponse(
-            {"ok": False, "status": "bad_input", "message": "Empty image."}
+            {"ok": False, "status": "bad_input", "message": "Please enter a pin URL."}
         )
 
     client = get_client()
     try:
+        pin_id = await pin_mod.resolve_pin_id(raw_input, client)
+    except pin_mod.PinUrlError as exc:
+        return JSONResponse({"ok": False, "status": "bad_input", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "status": "error", "message": str(exc)})
+
+    try:
         # Anonymous-first: never touches the throwaway account.
-        matches = await visual_mod.visual_search(
-            image_bytes, content_type, client, anonymous=True
-        )
+        matches = await visual_mod.visual_search_by_pin(pin_id, client, anonymous=True)
     except visual_mod.VisualSearchUnavailable as exc:
         return JSONResponse(
             {
                 "ok": False,
                 "status": "unavailable",
                 "message": (
-                    "Reverse image search is currently unavailable "
-                    "(Pinterest blocked it or changed its internals). "
-                    + str(exc)
+                    "Visual search is currently unavailable "
+                    "(Pinterest blocked it or changed its internals). " + str(exc)
                 ),
             }
         )

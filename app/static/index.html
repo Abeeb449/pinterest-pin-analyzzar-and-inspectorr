@@ -49,13 +49,19 @@
         <div id="pin-result" class="result hidden"></div>
       </section>
 
-      <!-- Panel 2: Find similar pins (reverse image search) -->
+      <!-- Panel 2: Find similar pins (visual "flashlight" search by pin) -->
       <section class="panel">
         <h2>Find similar pins</h2>
-        <div id="drop-zone" class="drop-zone">
-          <p>Drop an image here, or <span class="link-like">choose a file</span></p>
-          <input id="image-input" type="file" accept="image/*" hidden />
-        </div>
+        <p class="muted">Paste a pin URL to find visually similar pins.</p>
+        <form id="visual-form" class="row">
+          <input
+            id="visual-url"
+            type="text"
+            placeholder="Paste a pin URL or pin.it link"
+            autocomplete="off"
+          />
+          <button type="submit" id="visual-btn">Find similar</button>
+        </form>
         <div id="visual-status" class="status" role="status"></div>
         <div id="visual-grid" class="grid hidden"></div>
       </section>

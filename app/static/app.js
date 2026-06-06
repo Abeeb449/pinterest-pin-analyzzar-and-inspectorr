@@ -18,8 +18,9 @@
   const pinStatus = document.getElementById("pin-status");
   const pinResult = document.getElementById("pin-result");
 
-  const dropZone = document.getElementById("drop-zone");
-  const imageInput = document.getElementById("image-input");
+  const visualForm = document.getElementById("visual-form");
+  const visualUrl = document.getElementById("visual-url");
+  const visualBtn = document.getElementById("visual-btn");
   const visualStatus = document.getElementById("visual-status");
   const visualGrid = document.getElementById("visual-grid");
 
@@ -221,22 +222,18 @@
     visualGrid.classList.remove("hidden");
   }
 
-  async function handleImage(file) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setVisualStatus("error", "Please choose an image file.");
-      return;
-    }
+  async function handleVisualSearch(event) {
+    event.preventDefault();
     visualGrid.classList.add("hidden");
     visualGrid.innerHTML = "";
-    setVisualStatus("loading", "Uploading & searching…");
+    visualBtn.disabled = true;
+    setVisualStatus("loading", "Finding similar pins…");
     try {
-      const fd = new FormData();
-      fd.append("image", file);
       const res = await fetch("/api/visual", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: fd,
+        body: JSON.stringify({ url: visualUrl.value }),
       });
       if (res.status === 401) {
         show("login");
@@ -252,32 +249,15 @@
       }
     } catch (_) {
       setVisualStatus("error", "Network error. Try again.");
+    } finally {
+      visualBtn.disabled = false;
     }
   }
 
   loginForm.addEventListener("submit", handleLogin);
   logoutBtn.addEventListener("click", handleLogout);
   pinForm.addEventListener("submit", handlePinLookup);
-
-  // Drag-and-drop + click-to-pick for the visual panel.
-  dropZone.addEventListener("click", () => imageInput.click());
-  imageInput.addEventListener("change", (e) => handleImage(e.target.files[0]));
-  ["dragenter", "dragover"].forEach((ev) =>
-    dropZone.addEventListener(ev, (e) => {
-      e.preventDefault();
-      dropZone.classList.add("dragover");
-    })
-  );
-  ["dragleave", "drop"].forEach((ev) =>
-    dropZone.addEventListener(ev, (e) => {
-      e.preventDefault();
-      dropZone.classList.remove("dragover");
-    })
-  );
-  dropZone.addEventListener("drop", (e) => {
-    const file = e.dataTransfer.files && e.dataTransfer.files[0];
-    handleImage(file);
-  });
+  visualForm.addEventListener("submit", handleVisualSearch);
 
   checkSession();
 })();

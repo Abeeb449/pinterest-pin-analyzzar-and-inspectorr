@@ -1,15 +1,20 @@
-"""Reverse image search (visual search) — HIGHEST-RISK feature, fully ISOLATED.
+"""Reverse image / visual search ("flashlight") — ISOLATED, low-risk.
 
-Design constraints (deliberately conservative):
-  - ANONYMOUS-FIRST: uploads/searches use the cookie-free client by default, so
-    the throwaway account is never involved unless explicitly enabled later.
-  - Isolated: a failure here NEVER affects pin lookup. Every path degrades to a
-    clear "unavailable" message; nothing raises out of `visual_search`.
-  - Upload is a write-like action, so it is retry-light and extra-throttled.
+Verified against Pinterest's real network traffic: visual search runs as a
+GET by an EXISTING pin — there is NO image upload involved. This makes it as
+low-risk as pin lookup (a read, looks like normal browsing) and means the
+throwaway account is never asked to upload anything.
 
-The endpoint paths/field names below are HYPOTHESES to verify against live
-network traffic (via the probe), exactly as we did for annotations. Until
-verified, `visual_search` returns a graceful "unavailable".
+Endpoint (verified):
+  GET /resource/ApiResource/get/
+    source_url = /pin/<pin_id>/visual-search/?x=..&y=..&w=..&h=..&surfaceType=flashlight
+    data = {"options":{"url":"/v3/visual_search/flashlight/pin/<pin_id>/",
+                       "data":{"x":..,"y":..,"w":..,"h":..,
+                               "request_source":9,"crop_source":5},
+                       "bookmarks":[]},"context":{}}
+
+Isolated + graceful: every failure degrades to VisualSearchUnavailable; nothing
+here crashes the app, and pin lookup is entirely unaffected.
 """
 from __future__ import annotations
 
@@ -19,12 +24,7 @@ from typing import Any
 from app.pinterest.client import BlockedError, PinterestClient
 from app.pinterest.models import ImageMatch
 
-# Hypothesised endpoints (verify with the probe before relying on them):
-#   1. Upload an image -> returns an image URL / signature
-#   2. Query a visual-search resource with that URL/signature -> similar pins
-UPLOAD_PATH = "/_ngjs/resource/ImageResource/create/"  # hypothesis
-VISUAL_SEARCH_PATH = "/resource/VisualLiveSearchResource/get/"  # hypothesis
-
+API_RESOURCE_PATH = "/resource/ApiResource/get/"
 MAX_RESULTS = 24
 
 
@@ -32,58 +32,44 @@ class VisualSearchUnavailable(Exception):
     """Visual search could not be completed; caller shows a friendly message."""
 
 
-async def upload_image(
-    image_bytes: bytes,
-    content_type: str,
-    client: PinterestClient,
-    *,
-    anonymous: bool = True,
-) -> str | None:
-    """Upload an image to Pinterest; return an image URL/signature, or None.
-
-    Best-effort and isolated: returns None on any failure rather than raising.
-    """
-    files = {"img": ("upload.jpg", image_bytes, content_type or "image/jpeg")}
-    try:
-        resp = await client.post_multipart(
-            UPLOAD_PATH, files=files, anonymous=anonymous
-        )
-    except (BlockedError, Exception):  # noqa: BLE001 - never propagate
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-    except (json.JSONDecodeError, ValueError):
-        return None
-    # The upload response shape is a hypothesis; try the likely locations.
-    for path in (
-        ("resource_response", "data", "url"),
-        ("resource_response", "data", "image_url"),
-        ("resource_response", "data"),
-    ):
-        cur: Any = data
-        for key in path:
-            if isinstance(cur, dict):
-                cur = cur.get(key)
-            else:
-                cur = None
-                break
-        if isinstance(cur, str) and cur.startswith("http"):
-            return cur
-    return None
+def _build_request(pin_id: str) -> tuple[str, str]:
+    """Build (source_url, data) for a full-image flashlight search of a pin."""
+    # x/y/w/h are normalised crop coords (0..1); full image = whole pin.
+    crop = {
+        "x": 0.0,
+        "y": 0.0,
+        "w": 1.0,
+        "h": 1.0,
+        "request_source": 9,  # magic constants observed in live traffic
+        "crop_source": 5,
+    }
+    source_url = (
+        f"/pin/{pin_id}/visual-search/?x=0&y=0&w=1&h=1&surfaceType=flashlight"
+    )
+    options = {
+        "url": f"/v3/visual_search/flashlight/pin/{pin_id}/",
+        "data": crop,
+        "bookmarks": [],
+    }
+    data = json.dumps({"options": options, "context": {}}, separators=(",", ":"))
+    return source_url, data
 
 
 def _parse_matches(raw: dict[str, Any]) -> list[ImageMatch]:
     """Map a visual-search response to ImageMatch list (defensive)."""
-    matches: list[ImageMatch] = []
     data = raw.get("resource_response", {})
     if isinstance(data, dict):
         data = data.get("data", [])
+    # Some responses wrap results under {"results": [...]}.
+    if isinstance(data, dict):
+        data = data.get("results") or data.get("pins") or []
     results = data if isinstance(data, list) else []
+
+    matches: list[ImageMatch] = []
     for item in results:
         if not isinstance(item, dict):
             continue
+        # Skip non-pin modules (ads, separators, etc.).
         if item.get("type") not in (None, "pin"):
             continue
         pin_id = item.get("id")
@@ -105,7 +91,7 @@ def _parse_matches(raw: dict[str, Any]) -> list[ImageMatch]:
                 image=image,
                 title=(item.get("title") or item.get("grid_title") or None),
                 board_name=(board.get("name") if isinstance(board, dict) else None),
-                match_source="visual_search",
+                match_source="flashlight",
             )
         )
         if len(matches) >= MAX_RESULTS:
@@ -113,36 +99,25 @@ def _parse_matches(raw: dict[str, Any]) -> list[ImageMatch]:
     return matches
 
 
-async def visual_search(
-    image_bytes: bytes,
-    content_type: str,
+async def visual_search_by_pin(
+    pin_id: str,
     client: PinterestClient,
     *,
     anonymous: bool = True,
 ) -> list[ImageMatch]:
-    """Full flow: upload -> query similar pins. Returns [] gracefully on failure.
+    """Find pins visually similar to an existing pin. Anonymous-first.
 
-    Raises VisualSearchUnavailable only to let the API layer show a specific
-    message; it never crashes the app.
+    Raises VisualSearchUnavailable on block/failure (the API layer turns this
+    into a friendly message). Never crashes.
     """
-    image_url = await upload_image(
-        image_bytes, content_type, client, anonymous=anonymous
-    )
-    if not image_url:
-        raise VisualSearchUnavailable("Image upload failed or was blocked.")
-
-    options = {
-        "image_url": image_url,
-        "crop": {"x": 0, "y": 0, "w": 1, "h": 1},
-        "page_size": MAX_RESULTS,
-    }
-    data = json.dumps({"options": options, "context": {}}, separators=(",", ":"))
+    source_url, data = _build_request(pin_id)
     try:
-        resp = await client.post_resource(
-            VISUAL_SEARCH_PATH, source_url="/", data=data, anonymous=anonymous
+        resp = await client.get_resource(
+            API_RESOURCE_PATH, source_url=source_url, data=data, anonymous=anonymous
         )
     except (BlockedError, Exception) as exc:  # noqa: BLE001
-        raise VisualSearchUnavailable(f"Visual search query failed: {exc}") from exc
+        raise VisualSearchUnavailable(f"Visual search request failed: {exc}") from exc
+
     if resp.status_code != 200:
         raise VisualSearchUnavailable(
             f"Visual search returned HTTP {resp.status_code}."
