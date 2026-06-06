@@ -123,6 +123,40 @@ async def fetch_pin_raw(pin_input: str, client: PinterestClient) -> dict[str, An
         ) from exc
 
 
+async def fetch_pin_raw_debug(
+    pin_id: str, client: PinterestClient
+) -> tuple[dict[str, Any], str]:
+    """DEBUG: return the raw pin object from whichever rich source responds.
+
+    Tries the JSON API first; if blocked, pulls the pin object out of the
+    embedded page state. Returns (raw_pin_object, source_label) so we can read
+    the TRUE field paths for comments/annotations on a real response.
+    """
+    # 1. JSON API
+    try:
+        raw = await fetch_pin_raw(pin_id, client)
+        pin_obj = extract_pin_object(raw)
+        if pin_obj:
+            return pin_obj, "json_api"
+        return raw, "json_api_envelope"
+    except BlockedError:
+        pass
+
+    # 2. Embedded page state
+    pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
+    resp = await client.get_with_retry(pin_url, accept="text/html")
+    html = resp.text or ""
+    for m in _PWS_DATA_RE.finditer(html):
+        try:
+            blob = json.loads(m.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        pin_obj = _find_pin_in_blob(blob, pin_id)
+        if pin_obj is not None:
+            return pin_obj, "embedded_state"
+    raise BlockedError("Could not obtain a raw pin object from any rich source.")
+
+
 # --------------------------------------------------------------------------- #
 # Raw -> PinData mapping (defensive)
 # --------------------------------------------------------------------------- #
@@ -226,38 +260,64 @@ def _map_reactions(pin: dict[str, Any]) -> int | None:
     return _to_int(pin.get("total_reaction_count"))
 
 
+def _collect_annotation_strings(source: Any, out: list[str]) -> None:
+    """Pull keyword strings out of whatever shape an annotation source takes."""
+    if isinstance(source, dict):
+        # pin_join.annotations is commonly { "keyword": "/search/url", ... }
+        for key, val in source.items():
+            if isinstance(key, str) and key and not key.isdigit():
+                out.append(key)
+            elif isinstance(val, str) and val:
+                out.append(val)
+    elif isinstance(source, list):
+        for item in source:
+            if isinstance(item, dict):
+                name = _first(
+                    item.get("name"), item.get("keyword"),
+                    item.get("label"), item.get("term"), item.get("text"),
+                )
+                if name:
+                    out.append(str(name))
+            elif isinstance(item, (str, int)):
+                out.append(str(item))
+
+
 def _map_annotations(pin: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    # Brief hints: pin_join.visual_annotation / visual_objects
-    va = _get(pin, "pin_join", "visual_annotation")
-    if isinstance(va, list):
-        out.extend(str(x) for x in va if isinstance(x, (str, int)))
-    # Some payloads use a list of {name: ...} objects
+    # Known/historical annotation locations (verified against real payloads).
     for source in (
+        _get(pin, "pin_join", "visual_annotation"),
+        _get(pin, "pin_join", "annotations"),
         _get(pin, "pin_join", "annotations_with_links"),
         pin.get("visual_objects"),
+        pin.get("visual_annotation"),
+        pin.get("pin_note_annotations"),
+        _get(pin, "auto_alt_text"),  # sometimes a single descriptive string
     ):
-        if isinstance(source, list):
-            for item in source:
-                if isinstance(item, dict):
-                    name = _first(item.get("name"), item.get("keyword"), item.get("label"))
-                    if name:
-                        out.append(str(name))
-                elif isinstance(item, str):
-                    out.append(item)
+        _collect_annotation_strings(source, out)
     # de-dup, preserve order
     seen: set[str] = set()
     deduped = []
     for a in out:
-        if a not in seen:
+        a = a.strip()
+        if a and a not in seen:
             seen.add(a)
             deduped.append(a)
     return deduped
 
 
 def _map_comments(pin: dict[str, Any]) -> tuple[int | None, list[Comment]]:
-    count = _to_int(_first(pin.get("comment_count"), _get(pin, "aggregated_pin_data", "comment_count")))
+    # Comment COUNT lives in several spots depending on the surface.
+    count = _to_int(
+        _first(
+            pin.get("comment_count"),
+            _get(pin, "aggregated_pin_data", "comment_count"),
+            _get(pin, "aggregated_pin_data", "aggregated_stats", "comments"),
+        )
+    )
     comments: list[Comment] = []
+    # The actual comment OBJECTS are usually loaded by a separate request and
+    # are absent from the pin object itself; map any that happen to be inline.
     raw_comments = _first(
         _get(pin, "comments", "data"),
         pin.get("comments") if isinstance(pin.get("comments"), list) else None,
@@ -270,7 +330,7 @@ def _map_comments(pin: dict[str, Any]) -> tuple[int | None, list[Comment]]:
             comments.append(
                 Comment(
                     author=_first(_get(c, "user", "full_name"), _get(c, "user", "username")),
-                    text=_first(c.get("text"), c.get("comment_text")),
+                    text=_first(c.get("text"), c.get("comment_text"), c.get("details")),
                     created_at=_first(c.get("created_at")),
                 )
             )

@@ -125,6 +125,32 @@ async def lookup_pin(body: PinLookupRequest) -> JSONResponse:
     )
 
 
+@app.post("/api/pin/raw", dependencies=[Depends(auth.require_auth)])
+async def lookup_pin_raw(body: PinLookupRequest) -> JSONResponse:
+    """DEBUG: return the raw, unmapped JSON Pinterest gives us for a pin.
+
+    Used to confirm the TRUE field paths for comments/annotations on a real
+    response. Auth-gated like everything else; returns whichever rich source
+    actually responded (API or embedded page state).
+    """
+    raw_input = (body.url or "").strip()
+    if not raw_input:
+        return JSONResponse({"ok": False, "message": "Please enter a pin URL."})
+
+    client = get_client()
+    try:
+        pin_id = await pin_mod.resolve_pin_id(raw_input, client)
+        raw, source = await pin_mod.fetch_pin_raw_debug(pin_id, client)
+    except pin_mod.PinUrlError as exc:
+        return JSONResponse({"ok": False, "status": "bad_input", "message": str(exc)})
+    except BlockedError as exc:
+        return JSONResponse({"ok": False, "status": "blocked", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "status": "error", "message": str(exc)})
+
+    return JSONResponse({"ok": True, "source": source, "pin_id": pin_id, "raw": raw})
+
+
 @app.get("/")
 def index() -> FileResponse:
     """Serve the single-page frontend."""
