@@ -33,6 +33,12 @@ class PinLookupRequest(BaseModel):
     url: str
 
 
+class ResourceProbeRequest(BaseModel):
+    resource: str
+    options: dict = {}
+    source_url: str = "/"
+
+
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     """Close the shared Pinterest httpx client on app shutdown."""
@@ -149,6 +155,24 @@ async def lookup_pin_raw(body: PinLookupRequest) -> JSONResponse:
         return JSONResponse({"ok": False, "status": "error", "message": str(exc)})
 
     return JSONResponse({"ok": True, "source": source, "pin_id": pin_id, "raw": raw})
+
+
+@app.post("/api/resource/probe", dependencies=[Depends(auth.require_auth)])
+async def probe_resource(body: ResourceProbeRequest) -> JSONResponse:
+    """DEBUG: call an arbitrary Pinterest resource and return raw JSON.
+
+    Used to discover the real comments/annotations endpoint shapes.
+    """
+    client = get_client()
+    try:
+        raw = await pin_mod.fetch_resource_raw(
+            client, body.resource, body.options, source_url=body.source_url
+        )
+    except BlockedError as exc:
+        return JSONResponse({"ok": False, "status": "blocked", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "status": "error", "message": str(exc)})
+    return JSONResponse({"ok": True, "raw": raw})
 
 
 @app.get("/")

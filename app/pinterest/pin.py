@@ -123,6 +123,29 @@ async def fetch_pin_raw(pin_input: str, client: PinterestClient) -> dict[str, An
         ) from exc
 
 
+async def fetch_resource_raw(
+    client: PinterestClient,
+    resource: str,
+    options: dict[str, Any],
+    *,
+    source_url: str = "/",
+) -> dict[str, Any]:
+    """DEBUG: call an arbitrary Pinterest resource and return raw JSON.
+
+    Lets us probe the comments / annotations endpoints interactively to learn
+    their real shapes, without a redeploy per guess.
+    """
+    path = f"/resource/{resource}/get/"
+    data = json.dumps({"options": options, "context": {}}, separators=(",", ":"))
+    resp = await client.get_resource(path, source_url=source_url, data=data)
+    if resp.status_code != 200:
+        raise BlockedError(f"{resource} returned HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise BlockedError(f"{resource} returned non-JSON (likely blocked).") from exc
+
+
 async def fetch_pin_raw_debug(
     pin_id: str, client: PinterestClient
 ) -> tuple[dict[str, Any], str]:
@@ -179,8 +202,16 @@ def _get(d: Any, *keys: str, default: Any = None) -> Any:
 
 
 def _first(*values: Any, default: Any = None) -> Any:
-    """Return the first non-empty value."""
+    """Return the first non-empty value.
+
+    Whitespace-only strings (Pinterest uses " " as an empty placeholder for
+    title/description) are treated as empty.
+    """
     for v in values:
+        if isinstance(v, str):
+            if v.strip():
+                return v
+            continue
         if v not in (None, "", [], {}):
             return v
     return default
@@ -197,6 +228,25 @@ def _to_int(value: Any) -> int | None:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value)
     return None
+
+
+def _first_number(*values: Any) -> int | None:
+    """First value that coerces to a POSITIVE int.
+
+    Pinterest often returns a placeholder 0 in one field while the true count
+    lives in another (e.g. top-level comment_count=0 vs
+    aggregated_pin_data.comment_count=138), so 0 is skipped in favour of a
+    later positive value. Falls back to 0 only if every candidate is 0/None.
+    """
+    saw_zero = False
+    for v in values:
+        n = _to_int(v)
+        if n is None:
+            continue
+        if n > 0:
+            return n
+        saw_zero = True
+    return 0 if saw_zero else None
 
 
 def extract_pin_object(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -307,34 +357,45 @@ def _map_annotations(pin: dict[str, Any]) -> list[str]:
 
 
 def _map_comments(pin: dict[str, Any]) -> tuple[int | None, list[Comment]]:
-    # Comment COUNT lives in several spots depending on the surface.
-    count = _to_int(
-        _first(
-            pin.get("comment_count"),
-            _get(pin, "aggregated_pin_data", "comment_count"),
-            _get(pin, "aggregated_pin_data", "aggregated_stats", "comments"),
-        )
+    # Comment COUNT: prefer the aggregated count. The top-level `comment_count`
+    # is frequently a misleading 0 even when the pin has many comments, so it is
+    # checked LAST. (Verified against a real response: top-level 0 vs
+    # aggregated_pin_data.comment_count 138.)
+    count = _first_number(
+        _get(pin, "aggregated_pin_data", "comment_count"),
+        _get(pin, "aggregated_pin_data", "aggregated_stats", "comments"),
+        pin.get("comment_count"),
     )
     comments: list[Comment] = []
-    # The actual comment OBJECTS are usually loaded by a separate request and
-    # are absent from the pin object itself; map any that happen to be inline.
+    # Inline comment objects are usually absent (they load via a separate
+    # endpoint), but map any that happen to be present.
     raw_comments = _first(
+        _get(pin, "highlighted_aggregated_comments"),
         _get(pin, "comments", "data"),
         pin.get("comments") if isinstance(pin.get("comments"), list) else None,
         default=[],
     )
     if isinstance(raw_comments, list):
         for c in raw_comments:
-            if not isinstance(c, dict):
-                continue
-            comments.append(
-                Comment(
-                    author=_first(_get(c, "user", "full_name"), _get(c, "user", "username")),
-                    text=_first(c.get("text"), c.get("comment_text"), c.get("details")),
-                    created_at=_first(c.get("created_at")),
-                )
-            )
+            comment = _parse_comment_obj(c)
+            if comment is not None:
+                comments.append(comment)
     return count, comments
+
+
+def _parse_comment_obj(c: Any) -> Comment | None:
+    """Map one raw comment/aggregated-comment object to a Comment."""
+    if not isinstance(c, dict):
+        return None
+    return Comment(
+        author=_first(
+            _get(c, "user", "full_name"),
+            _get(c, "user", "username"),
+            _get(c, "commenter", "full_name"),
+        ),
+        text=_first(c.get("text"), c.get("comment_text"), c.get("details")),
+        created_at=_first(c.get("created_at")),
+    )
 
 
 def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinData:
@@ -353,8 +414,19 @@ def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinDa
     pin_id = _first(pin.get("id"), pin_id_hint, default="unknown")
     url = f"https://www.pinterest.com/pin/{pin_id}/" if pin_id != "unknown" else None
 
-    title = _first(pin.get("title"), pin.get("grid_title"))
-    description = _first(pin.get("description"), pin.get("description_html"))
+    # title/grid_title are often empty ("" / " "); seo_title is a good fallback.
+    title = _first(
+        pin.get("title"),
+        pin.get("grid_title"),
+        pin.get("seo_title"),
+        pin.get("closeup_description"),
+    )
+    description = _first(
+        pin.get("description"),
+        pin.get("description_html"),
+        pin.get("closeup_unified_description"),
+        pin.get("closeup_user_note"),
+    )
 
     image = _first(
         _get(pin, "images", "orig", "url"),
