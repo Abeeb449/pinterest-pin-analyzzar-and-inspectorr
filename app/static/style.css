@@ -299,49 +299,49 @@ body {
 #copy-json { margin-top: 0.75rem; }
 
 /* --- Visual search panel --- */
-.drop-zone {
-  border: 2px dashed var(--border);
-  border-radius: 10px;
-  padding: 2rem 1rem;
-  text-align: center;
-  color: var(--muted);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-.drop-zone:hover,
-.drop-zone.dragover {
-  border-color: var(--accent);
-  background: #12151c;
-}
 .link-like { color: #7eb6ff; text-decoration: underline; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.7rem;
   margin-top: 1rem;
 }
 .grid-item {
-  display: block;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
   background: #12151c;
   text-decoration: none;
+  transition: border-color 0.15s, transform 0.1s;
 }
-.grid-item img { width: 100%; display: block; object-fit: cover; }
+.grid-item:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+/* Uniform tile: every thumbnail fills the same 2:3 portrait frame, cropped
+   to fit so tall/short pins all sit flush with no gaps or overlap. */
+.grid-item img,
 .grid-item .no-img {
-  height: 140px;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  display: block;
+}
+.grid-item .no-img {
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
   font-size: 0.8rem;
+  background: #1a1e27;
 }
 .grid-board {
-  padding: 0.35rem 0.5rem;
+  padding: 0.4rem 0.55rem;
   font-size: 0.75rem;
-  color: var(--text);
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
