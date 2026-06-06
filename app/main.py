@@ -37,6 +37,7 @@ class ResourceProbeRequest(BaseModel):
     resource: str
     options: dict = {}
     source_url: str = "/"
+    anonymous: bool = False
 
 
 @app.on_event("shutdown")
@@ -166,7 +167,8 @@ async def probe_resource(body: ResourceProbeRequest) -> JSONResponse:
     client = get_client()
     try:
         raw = await pin_mod.fetch_resource_raw(
-            client, body.resource, body.options, source_url=body.source_url
+            client, body.resource, body.options,
+            source_url=body.source_url, anonymous=body.anonymous,
         )
     except BlockedError as exc:
         return JSONResponse({"ok": False, "status": "blocked", "message": str(exc)})

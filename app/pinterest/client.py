@@ -56,25 +56,26 @@ class PinterestClient:
     def __init__(self) -> None:
         self._user_agent = random.choice(_USER_AGENTS)
         self._client: httpx.AsyncClient | None = None
+        self._anon_client: httpx.AsyncClient | None = None
         self._warmed_up = False
+        self._anon_warmed_up = False
         self._last_request_ts = 0.0
         self._lock = asyncio.Lock()
 
     # --- lifecycle ---
 
+    def _base_headers(self) -> dict[str, str]:
+        return {
+            "User-Agent": self._user_agent,
+            "Accept-Language": "en-US,en;q=0.9",
+            "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Upgrade-Insecure-Requests": "1",
+        }
+
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            headers = {
-                "User-Agent": self._user_agent,
-                "Accept-Language": "en-US,en;q=0.9",
-                # Browser-like client hints / fetch metadata. These don't defeat
-                # bot-protection on their own but make anonymous requests look
-                # less like a bare scraper.
-                "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "Upgrade-Insecure-Requests": "1",
-            }
             cookies: dict[str, str] = {}
             # Phase 2 lever: inject a logged-in session if configured.
             if config.PINTEREST_SESS_COOKIE:
@@ -84,7 +85,7 @@ class PinterestClient:
 
             self._client = httpx.AsyncClient(
                 base_url=PINTEREST_BASE,
-                headers=headers,
+                headers=self._base_headers(),
                 cookies=cookies,
                 timeout=httpx.Timeout(20.0),
                 follow_redirects=True,
@@ -92,26 +93,54 @@ class PinterestClient:
             )
         return self._client
 
-    async def warmup(self) -> None:
+    async def _ensure_anon_client(self) -> httpx.AsyncClient:
+        """A SECOND client that never carries the session cookie.
+
+        Pinterest serves some fields (notably the 'About this Pin' ML keyword
+        annotations) only on the LOGGED-OUT response and hides them when
+        authenticated. This client fetches that anonymous view even while the
+        rest of the app stays authenticated for reliability.
+        """
+        if self._anon_client is None:
+            self._anon_client = httpx.AsyncClient(
+                base_url=PINTEREST_BASE,
+                headers=self._base_headers(),
+                cookies={},  # never any session cookie
+                timeout=httpx.Timeout(20.0),
+                follow_redirects=True,
+                http2=True,
+            )
+        return self._anon_client
+
+    async def warmup(self, *, anonymous: bool = False) -> None:
         """Hit the homepage once so Pinterest issues baseline cookies."""
-        if self._warmed_up:
-            return
-        client = await self._ensure_client()
+        if anonymous:
+            if self._anon_warmed_up:
+                return
+            client = await self._ensure_anon_client()
+        else:
+            if self._warmed_up:
+                return
+            client = await self._ensure_client()
         try:
             await self._throttle()
             resp = await client.get("/", headers={"Accept": "text/html"})
-            # Even a non-200 still usually sets cookies; don't hard-fail here.
-            _ = resp.status_code
+            _ = resp.status_code  # non-200 still usually sets cookies
         except httpx.HTTPError:
-            # Warmup is best-effort; the real request may still work.
             pass
         finally:
-            self._warmed_up = True
+            if anonymous:
+                self._anon_warmed_up = True
+            else:
+                self._warmed_up = True
 
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._anon_client is not None:
+            await self._anon_client.aclose()
+            self._anon_client = None
 
     # --- request plumbing ---
 
@@ -135,15 +164,22 @@ class PinterestClient:
         *,
         source_url: str,
         data: str,
+        anonymous: bool = False,
     ) -> httpx.Response:
         """GET a Pinterest `/resource/.../get/` endpoint with retry/backoff.
 
         `data` is the url-encodable JSON string the resource expects; httpx
-        handles encoding via the params dict.
+        handles encoding via the params dict. When `anonymous=True`, the request
+        is made WITHOUT the session cookie (some fields, like the ML keyword
+        annotations, only appear on the logged-out response).
         """
         async with self._lock:
-            await self.warmup()
-            client = await self._ensure_client()
+            await self.warmup(anonymous=anonymous)
+            client = (
+                await self._ensure_anon_client()
+                if anonymous
+                else await self._ensure_client()
+            )
             headers = {
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "X-Requested-With": "XMLHttpRequest",

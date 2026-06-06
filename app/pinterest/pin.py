@@ -139,15 +139,19 @@ async def fetch_resource_raw(
     options: dict[str, Any],
     *,
     source_url: str = "/",
+    anonymous: bool = False,
 ) -> dict[str, Any]:
     """DEBUG: call an arbitrary Pinterest resource and return raw JSON.
 
     Lets us probe the comments / annotations endpoints interactively to learn
-    their real shapes, without a redeploy per guess.
+    their real shapes, without a redeploy per guess. `anonymous=True` fetches
+    the logged-out view (where the ML keyword annotations live).
     """
     path = f"/resource/{resource}/get/"
     data = json.dumps({"options": options, "context": {}}, separators=(",", ":"))
-    resp = await client.get_resource(path, source_url=source_url, data=data)
+    resp = await client.get_resource(
+        path, source_url=source_url, data=data, anonymous=anonymous
+    )
     if resp.status_code != 200:
         raise BlockedError(f"{resource} returned HTTP {resp.status_code}")
     try:
