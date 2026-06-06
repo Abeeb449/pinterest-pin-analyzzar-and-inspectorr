@@ -91,9 +91,19 @@ async def resolve_pin_id(raw: str, client: PinterestClient) -> str:
 
 
 def build_pin_data_param(pin_id: str) -> str:
-    """Build the `data` query param for the PinResource request."""
+    """Build the `data` query param for the PinResource request.
+
+    Uses the `auth_web_main_pin` field set (a superset of `detailed`: it carries
+    the same saves/comments/reactions PLUS keyword data like hashtags and the
+    ML-classified dominant interest). `add_vase: true` requests visual
+    annotations when Pinterest has them for the pin.
+    """
     payload = {
-        "options": {"id": pin_id, "field_set_key": "detailed"},
+        "options": {
+            "id": pin_id,
+            "field_set_key": "auth_web_main_pin",
+            "add_vase": True,
+        },
         "context": {},
     }
     return json.dumps(payload, separators=(",", ":"))
@@ -333,18 +343,42 @@ def _collect_annotation_strings(source: Any, out: list[str]) -> None:
 
 
 def _map_annotations(pin: dict[str, Any]) -> list[str]:
+    """Collect Pinterest's keyword annotations / tags for the pin.
+
+    Sources confirmed against a real `auth_web_main_pin` response:
+      - hashtags                       -> the pin's own tags (e.g. "#homedecor")
+      - l2_dominant_interest.label     -> ML-classified category ("Room Decor")
+      - interests[].name               -> ML interest taxonomy (when present)
+      - manual_interest_tags           -> pinner-set interest tags
+      - pin_join.visual_annotation     -> visual-search keywords (older/visual pins)
+    """
     out: list[str] = []
-    # Known/historical annotation locations (verified against real payloads).
+
+    # 1. Hashtags — keep the leading '#' so they read as tags.
+    hashtags = pin.get("hashtags")
+    if isinstance(hashtags, list):
+        out.extend(str(h) for h in hashtags if isinstance(h, str) and h.strip())
+
+    # 2. Dominant interest (single labelled category).
+    for label_path in (
+        _get(pin, "l2_dominant_interest", "label"),
+        _get(pin, "dominant_interest", "label"),
+    ):
+        if isinstance(label_path, str) and label_path.strip():
+            out.append(label_path.strip())
+
+    # 3 & 4 & 5. Interest taxonomy, manual tags, and visual annotations.
     for source in (
+        pin.get("interests"),
+        pin.get("manual_interest_tags"),
         _get(pin, "pin_join", "visual_annotation"),
         _get(pin, "pin_join", "annotations"),
         _get(pin, "pin_join", "annotations_with_links"),
         pin.get("visual_objects"),
         pin.get("visual_annotation"),
-        pin.get("pin_note_annotations"),
-        _get(pin, "auto_alt_text"),  # sometimes a single descriptive string
     ):
         _collect_annotation_strings(source, out)
+
     # de-dup, preserve order
     seen: set[str] = set()
     deduped = []
