@@ -148,6 +148,16 @@ class PinterestClient:
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": PINTEREST_BASE + source_url,
+                "Origin": PINTEREST_BASE,
+                # Headers a real Pinterest web XHR sends. The API path is the
+                # most bot-protected surface; without these it 403s even when
+                # authenticated.
+                "X-APP-VERSION": "0c2c1f6",
+                "X-Pinterest-PWS-Handler": "www/[username]/[slug].js",
+                "X-Pinterest-AppState": "active",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
                 **self._csrf_header(client),
             }
             params = {"source_url": source_url, "data": data}

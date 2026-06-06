@@ -390,8 +390,89 @@ async def fetch_pin_via_oembed(pin_id: str, client: PinterestClient) -> PinData 
     )
 
 
+# Pinterest embeds its full app state as JSON in a <script> tag on the pin page.
+# When authenticated, this blob carries the SAME rich pin object as the JSON API
+# (saves, comments, annotations) — and the HTML page is far less bot-blocked
+# than the /resource/ API path.
+_PWS_DATA_RE = re.compile(
+    r'<script[^>]+id=["\'](?:__PWS_DATA__|initial-state|__PWS_INITIAL_PROPS__)["\']'
+    r'[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+
+
+def _find_pin_in_blob(obj: Any, pin_id: str, depth: int = 0) -> dict[str, Any] | None:
+    """Recursively search the embedded app-state JSON for THE pin object.
+
+    A match is a dict whose id equals pin_id and that looks like a pin (has
+    pin-ish keys). Bounded depth so a huge blob can't blow the stack.
+    """
+    if depth > 12:
+        return None
+    if isinstance(obj, dict):
+        oid = obj.get("id")
+        if (
+            str(oid) == str(pin_id)
+            and any(k in obj for k in ("aggregated_pin_data", "board", "pinner",
+                                       "native_creator", "story_pin_data", "images"))
+        ):
+            return obj
+        for v in obj.values():
+            found = _find_pin_in_blob(v, pin_id, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_pin_in_blob(v, pin_id, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+async def fetch_pin_via_embedded_state(
+    pin_id: str, client: PinterestClient
+) -> PinData | None:
+    """Strategy 2 (rich, needs auth): extract the embedded app-state JSON from
+    the pin's HTML page and map it exactly like the JSON API response.
+
+    When the session cookie is set, this returns saves/comments/annotations
+    even though the /resource/ API path is blocked.
+    """
+    pin_url = f"https://www.pinterest.com/pin/{pin_id}/"
+    try:
+        resp = await client.get_with_retry(pin_url, accept="text/html")
+    except BlockedError:
+        return None
+    if resp.status_code != 200:
+        return None
+    html = resp.text or ""
+    if not html:
+        return None
+
+    for m in _PWS_DATA_RE.finditer(html):
+        chunk = m.group(1).strip()
+        try:
+            blob = json.loads(chunk)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        pin_obj = _find_pin_in_blob(blob, pin_id)
+        if pin_obj is not None:
+            # Reuse the exact same defensive mapper as the JSON API path.
+            pin = parse_pin_data(
+                {"resource_response": {"data": pin_obj}}, pin_id_hint=pin_id
+            )
+            # Only accept if it actually yielded the rich bits worth having.
+            if pin.title or pin.image or pin.board_name or pin.saves is not None:
+                pin.notes.insert(
+                    0,
+                    "source: authenticated page state (full data via embedded JSON)",
+                )
+                return pin
+    return None
+
+
 async def fetch_pin_via_html(pin_id: str, client: PinterestClient) -> PinData | None:
-    """Fallback 2: scrape the pin's public HTML page (OG tags + JSON-LD).
+    """Fallback 3: scrape the pin's public HTML page (OG tags + JSON-LD).
 
     Gives title, description, image, and sometimes pinner. No saves/comments.
     """
@@ -453,14 +534,17 @@ async def fetch_pin_via_html(pin_id: str, client: PinterestClient) -> PinData | 
 async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
     """High-level: resolve -> fetch -> parse into PinData.
 
-    Strategy ladder (each free, no account required):
-      1. Internal PinResource JSON API (richest: saves, comments, annotations).
-         Most bot-blocked surface, especially on shared datacenter IPs.
-      2. oEmbed endpoint (title, pinner, thumbnail).
-      3. Public HTML page scrape (title, description, image).
+    Strategy ladder (richest first; falls through on block/empty):
+      1. Internal PinResource JSON API — richest, but the most bot-blocked
+         surface (often 403s on datacenter IPs even when authenticated).
+      2. Authenticated embedded page state — the pin HTML page carries the
+         SAME rich object (saves/comments/annotations) in a JSON <script>;
+         far less blocked than the API path. This is the main win with a cookie.
+      3. oEmbed endpoint — thin (title, pinner, thumbnail).
+      4. Public HTML scrape — thin (title, description, image).
 
-    The first strategy that yields data wins. Only if ALL are blocked do we
-    raise BlockedError so the UI shows the graceful "blocked" message.
+    The first strategy that yields usable data wins. Only if ALL are blocked do
+    we raise BlockedError so the UI shows the graceful "blocked" message.
     """
     pin_id = await resolve_pin_id(pin_input, client)
 
@@ -476,8 +560,13 @@ async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
     except BlockedError as exc:
         primary_error = exc
 
-    # Strategies 2 & 3: lighter public surfaces.
-    for fallback in (fetch_pin_via_oembed, fetch_pin_via_html):
+    # Strategies 2-4: embedded rich state first (best with a cookie), then the
+    # thin public surfaces as a last resort.
+    for fallback in (
+        fetch_pin_via_embedded_state,
+        fetch_pin_via_oembed,
+        fetch_pin_via_html,
+    ):
         try:
             result = await fallback(pin_id, client)
         except Exception:  # noqa: BLE001 - a failing fallback must not crash
@@ -487,6 +576,6 @@ async def fetch_pin(pin_input: str, client: PinterestClient) -> PinData:
 
     # Everything was blocked.
     raise BlockedError(
-        "All fetch methods were blocked (JSON API, oEmbed, and HTML page). "
-        f"Last API error: {primary_error}"
+        "All fetch methods were blocked (JSON API, embedded state, oEmbed, "
+        f"and HTML page). Last API error: {primary_error}"
     )
