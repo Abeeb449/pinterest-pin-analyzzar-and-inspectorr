@@ -75,14 +75,7 @@ def _parse_matches(raw: dict[str, Any]) -> list[ImageMatch]:
         pin_id = item.get("id")
         if not pin_id:
             continue
-        images = item.get("images", {})
-        image = None
-        if isinstance(images, dict):
-            for size in ("236x", "474x", "orig"):
-                node = images.get(size)
-                if isinstance(node, dict) and node.get("url"):
-                    image = node["url"]
-                    break
+        image = _find_image_url(item)
         board = item.get("board")
         matches.append(
             ImageMatch(
@@ -97,6 +90,45 @@ def _parse_matches(raw: dict[str, Any]) -> list[ImageMatch]:
         if len(matches) >= MAX_RESULTS:
             break
     return matches
+
+
+def _find_image_url(item: Any, depth: int = 0) -> str | None:
+    """Find a Pinterest thumbnail URL anywhere inside a result item.
+
+    Image nesting varies across visual-search response shapes, so rather than
+    assume a fixed path we deep-scan for an i.pinimg.com URL, preferring a
+    mid-size thumbnail. Bounded depth so a big object can't blow the stack.
+    """
+    best: str | None = None
+    PREFERRED = ("236x", "474x", "564x", "736x")
+
+    def walk(node: Any, d: int) -> None:
+        nonlocal best
+        if best and any(s in best for s in PREFERRED):
+            return  # already have a good thumbnail
+        if d > 8:
+            return
+        if isinstance(node, str):
+            if "i.pinimg.com" in node and node.startswith("http"):
+                if best is None or any(s in node for s in PREFERRED):
+                    best = node
+        elif isinstance(node, dict):
+            # Prefer an explicit {size: {"url": ...}} images map first.
+            imgs = node.get("images")
+            if isinstance(imgs, dict):
+                for size in PREFERRED + ("orig",):
+                    sub = imgs.get(size)
+                    if isinstance(sub, dict) and isinstance(sub.get("url"), str):
+                        best = sub["url"]
+                        return
+            for v in node.values():
+                walk(v, d + 1)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, d + 1)
+
+    walk(item, depth)
+    return best
 
 
 async def visual_search_by_pin(
