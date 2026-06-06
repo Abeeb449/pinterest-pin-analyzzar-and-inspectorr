@@ -37,6 +37,10 @@ try:
 except ValueError:
     PINTEREST_REQUEST_DELAY = 1.0
 
+# Debug endpoints (raw-JSON dump + resource prober) are powerful, so they are
+# OFF by default. Set DEBUG_ENDPOINTS=1 (or true/yes/on) to enable them.
+DEBUG_ENDPOINTS: bool = _clean(os.getenv("DEBUG_ENDPOINTS")).lower() in {"1", "true", "yes", "on"}
+
 
 def using_pinterest_cookie() -> bool:
     """True when a Pinterest session cookie is configured (Phase 2)."""

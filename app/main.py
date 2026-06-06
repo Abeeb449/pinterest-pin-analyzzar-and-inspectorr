@@ -7,12 +7,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import auth, config
+
+
+def require_debug() -> None:
+    """Gate debug endpoints: 404 (invisible) unless DEBUG_ENDPOINTS is set."""
+    if not config.DEBUG_ENDPOINTS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
 from app.pinterest import pin as pin_mod
 from app.pinterest.client import BlockedError, close_client, get_client
 
@@ -132,7 +138,10 @@ async def lookup_pin(body: PinLookupRequest) -> JSONResponse:
     )
 
 
-@app.post("/api/pin/raw", dependencies=[Depends(auth.require_auth)])
+@app.post(
+    "/api/pin/raw",
+    dependencies=[Depends(require_debug), Depends(auth.require_auth)],
+)
 async def lookup_pin_raw(body: PinLookupRequest) -> JSONResponse:
     """DEBUG: return the raw, unmapped JSON Pinterest gives us for a pin.
 
@@ -158,7 +167,10 @@ async def lookup_pin_raw(body: PinLookupRequest) -> JSONResponse:
     return JSONResponse({"ok": True, "source": source, "pin_id": pin_id, "raw": raw})
 
 
-@app.post("/api/resource/probe", dependencies=[Depends(auth.require_auth)])
+@app.post(
+    "/api/resource/probe",
+    dependencies=[Depends(require_debug), Depends(auth.require_auth)],
+)
 async def probe_resource(body: ResourceProbeRequest) -> JSONResponse:
     """DEBUG: call an arbitrary Pinterest resource and return raw JSON.
 
