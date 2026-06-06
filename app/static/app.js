@@ -107,16 +107,34 @@
     return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
   }
 
+  // 241126 -> "241,126"; passes through null/undefined.
+  function fmtNum(n) {
+    if (n == null) return null;
+    try {
+      return Number(n).toLocaleString();
+    } catch (_) {
+      return String(n);
+    }
+  }
+
+  // "Mon, 15 Apr 2024 05:24:08 +0000" -> "15 Apr 2024" when parseable.
+  function fmtDate(s) {
+    if (!s) return "—";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
   function chipBlock(label, items) {
     if (!items || !items.length) return "";
     const chips = items.map((a) => `<span class="chip">${esc(a)}</span>`).join("");
-    return `<div class="chip-group"><div class="chip-label">${esc(label)}</div><div class="chips">${chips}</div></div>`;
+    return `<div class="chip-group"><div class="chip-label">${esc(label)} <span class="chip-count">${items.length}</span></div><div class="chips">${chips}</div></div>`;
   }
 
   function renderPin(pin) {
-    const saves = pin.saves == null ? "<em>unavailable</em>" : esc(pin.saves);
+    const saves = pin.saves == null ? "<em>unavailable</em>" : esc(fmtNum(pin.saves));
     const reactions =
-      pin.reactions == null ? "" : `<div class="kv"><span>Reactions</span><b>${esc(pin.reactions)}</b></div>`;
+      pin.reactions == null ? "" : `<div class="kv"><span>Reactions</span><b>${esc(fmtNum(pin.reactions))}</b></div>`;
 
     // Three DISTINCT keyword sources, shown separately so they're never
     // confused: Pinterest's ML annotations vs the pinner's hashtags vs the
@@ -139,10 +157,10 @@
           ${pin.description ? `<p class="desc">${esc(pin.description)}</p>` : ""}
           <div class="kv"><span>Board</span><b>${link(pin.board_url, pin.board_name || "—")}</b></div>
           <div class="kv"><span>Pinner</span><b>${link(pin.pinner_url, pin.pinner_name || "—")}</b></div>
-          <div class="kv"><span>Published</span><b>${esc(pin.created_at || "—")}</b></div>
+          <div class="kv"><span>Published</span><b>${esc(fmtDate(pin.created_at))}</b></div>
           <div class="kv"><span>Saves</span><b>${saves}</b></div>
           ${reactions}
-          <div class="kv"><span>Comments</span><b>${esc(pin.comment_count == null ? "—" : pin.comment_count)}</b></div>
+          <div class="kv"><span>Comments</span><b>${esc(pin.comment_count == null ? "—" : fmtNum(pin.comment_count))}</b></div>
           ${interestRow}
           ${annotationChips}
           ${hashtagChips}
@@ -154,12 +172,26 @@
 
     const copyBtn = document.getElementById("copy-json");
     copyBtn.addEventListener("click", async () => {
+      const text = JSON.stringify(pin, null, 2);
       try {
-        await navigator.clipboard.writeText(JSON.stringify(pin, null, 2));
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          // Fallback for non-secure contexts / older browsers.
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
         copyBtn.textContent = "Copied!";
         setTimeout(() => (copyBtn.textContent = "Copy JSON"), 1500);
       } catch (_) {
         copyBtn.textContent = "Copy failed";
+        setTimeout(() => (copyBtn.textContent = "Copy JSON"), 1500);
       }
     });
   }
@@ -209,6 +241,7 @@
       setVisualStatus("blocked", "No similar pins found.");
       return;
     }
+    setVisualStatus("", `${matches.length} similar pin${matches.length === 1 ? "" : "s"}`);
     visualGrid.innerHTML = matches
       .map((m) => {
         const img = m.image
