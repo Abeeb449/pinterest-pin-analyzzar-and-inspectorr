@@ -41,8 +41,13 @@ class PinData(BaseModel):
     comment_count: int | None = None
     comments: list[Comment] = Field(default_factory=list)
 
-    # Pinterest's keyword annotations / visual tags.
+    # Pinterest's ML-derived keyword annotations (inferred from title /
+    # description / image). These are DISTINCT from pinner-authored hashtags.
     annotations: list[str] = Field(default_factory=list)
+    # Pinner-authored hashtags (manually typed; not all pins have them).
+    hashtags: list[str] = Field(default_factory=list)
+    # Pinterest's single ML-classified dominant interest/category, if present.
+    dominant_interest: str | None = None
 
     # Non-fatal notes about missing/blocked fields, surfaced to the UI.
     notes: list[str] = Field(default_factory=list)

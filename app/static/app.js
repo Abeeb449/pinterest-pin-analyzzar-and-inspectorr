@@ -101,19 +101,26 @@
     return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
   }
 
+  function chipBlock(label, items) {
+    if (!items || !items.length) return "";
+    const chips = items.map((a) => `<span class="chip">${esc(a)}</span>`).join("");
+    return `<div class="chip-group"><div class="chip-label">${esc(label)}</div><div class="chips">${chips}</div></div>`;
+  }
+
   function renderPin(pin) {
     const saves = pin.saves == null ? "<em>unavailable</em>" : esc(pin.saves);
     const reactions =
       pin.reactions == null ? "" : `<div class="kv"><span>Reactions</span><b>${esc(pin.reactions)}</b></div>`;
-    const chips = (pin.annotations || [])
-      .map((a) => `<span class="chip">${esc(a)}</span>`)
-      .join("");
-    const comments = (pin.comments || [])
-      .map(
-        (c) =>
-          `<li><b>${esc(c.author || "anon")}</b>: ${esc(c.text || "")}</li>`
-      )
-      .join("");
+
+    // Three DISTINCT keyword sources, shown separately so they're never
+    // confused: Pinterest's ML annotations vs the pinner's hashtags vs the
+    // single ML dominant-interest category.
+    const annotationChips = chipBlock("Pinterest keyword annotations (ML)", pin.annotations);
+    const hashtagChips = chipBlock("Hashtags (pinner-authored)", pin.hashtags);
+    const interestRow = pin.dominant_interest
+      ? `<div class="kv"><span>Dominant interest</span><b>${esc(pin.dominant_interest)}</b></div>`
+      : "";
+
     const notes = (pin.notes || []).length
       ? `<div class="notes">Notes: ${pin.notes.map(esc).join("; ")}</div>`
       : "";
@@ -130,8 +137,9 @@
           <div class="kv"><span>Saves</span><b>${saves}</b></div>
           ${reactions}
           <div class="kv"><span>Comments</span><b>${esc(pin.comment_count == null ? "—" : pin.comment_count)}</b></div>
-          ${chips ? `<div class="chips">${chips}</div>` : ""}
-          ${comments ? `<ul class="comments">${comments}</ul>` : ""}
+          ${interestRow}
+          ${annotationChips}
+          ${hashtagChips}
           ${notes}
           <button type="button" class="ghost-btn" id="copy-json">Copy JSON</button>
         </div>

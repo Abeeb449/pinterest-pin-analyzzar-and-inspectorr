@@ -259,11 +259,19 @@ body {
 .kv span { color: var(--muted); }
 .kv b { text-align: right; word-break: break-word; }
 
+.chip-group { margin: 0.85rem 0; }
+.chip-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
-  margin: 0.75rem 0;
+  margin: 0.25rem 0;
 }
 .chip {
   background: #1f2530;

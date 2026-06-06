@@ -343,39 +343,27 @@ def _collect_annotation_strings(source: Any, out: list[str]) -> None:
 
 
 def _map_annotations(pin: dict[str, Any]) -> list[str]:
-    """Collect Pinterest's keyword annotations / tags for the pin.
+    """Collect Pinterest's ML-DERIVED keyword annotations only.
 
-    Sources confirmed against a real `auth_web_main_pin` response:
-      - hashtags                       -> the pin's own tags (e.g. "#homedecor")
-      - l2_dominant_interest.label     -> ML-classified category ("Room Decor")
-      - interests[].name               -> ML interest taxonomy (when present)
-      - manual_interest_tags           -> pinner-set interest tags
-      - pin_join.visual_annotation     -> visual-search keywords (older/visual pins)
+    These are inferred by Pinterest from the title / description / image and
+    are DISTINCT from pinner-authored hashtags (mapped separately). Sources,
+    in order of preference:
+      - pin_join.visual_annotation     -> the canonical ML keyword list
+      - pin_join.annotations           -> {keyword: /search-url} map
+      - interests[].name               -> ML interest taxonomy
+      - term_meta / term_meta_data     -> per-term annotation objects
+    Hashtags are deliberately NOT included here.
     """
     out: list[str] = []
-
-    # 1. Hashtags — keep the leading '#' so they read as tags.
-    hashtags = pin.get("hashtags")
-    if isinstance(hashtags, list):
-        out.extend(str(h) for h in hashtags if isinstance(h, str) and h.strip())
-
-    # 2. Dominant interest (single labelled category).
-    for label_path in (
-        _get(pin, "l2_dominant_interest", "label"),
-        _get(pin, "dominant_interest", "label"),
-    ):
-        if isinstance(label_path, str) and label_path.strip():
-            out.append(label_path.strip())
-
-    # 3 & 4 & 5. Interest taxonomy, manual tags, and visual annotations.
     for source in (
-        pin.get("interests"),
-        pin.get("manual_interest_tags"),
         _get(pin, "pin_join", "visual_annotation"),
         _get(pin, "pin_join", "annotations"),
         _get(pin, "pin_join", "annotations_with_links"),
-        pin.get("visual_objects"),
         pin.get("visual_annotation"),
+        pin.get("visual_objects"),
+        pin.get("interests"),
+        pin.get("term_meta"),
+        _get(pin, "pin_join", "term_meta"),
     ):
         _collect_annotation_strings(source, out)
 
@@ -388,6 +376,30 @@ def _map_annotations(pin: dict[str, Any]) -> list[str]:
             seen.add(a)
             deduped.append(a)
     return deduped
+
+
+def _map_hashtags(pin: dict[str, Any]) -> list[str]:
+    """Pinner-authored hashtags. Separate from ML annotations."""
+    hashtags = pin.get("hashtags")
+    if not isinstance(hashtags, list):
+        return []
+    out, seen = [], set()
+    for h in hashtags:
+        if isinstance(h, str) and h.strip() and h not in seen:
+            seen.add(h)
+            out.append(h.strip())
+    return out
+
+
+def _map_dominant_interest(pin: dict[str, Any]) -> str | None:
+    """Pinterest's single ML-classified dominant interest/category, if any."""
+    for label in (
+        _get(pin, "l2_dominant_interest", "label"),
+        _get(pin, "dominant_interest", "label"),
+    ):
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    return None
 
 
 def _map_comments(pin: dict[str, Any]) -> tuple[int | None, list[Comment]]:
@@ -475,6 +487,16 @@ def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinDa
     reactions = _map_reactions(pin)
     comment_count, comments = _map_comments(pin)
     annotations = _map_annotations(pin)
+    hashtags = _map_hashtags(pin)
+    dominant_interest = _map_dominant_interest(pin)
+
+    # Be explicit when Pinterest's ML keyword annotations aren't in this payload,
+    # so a pin with only hashtags/interest isn't mistaken for having them.
+    if not annotations:
+        notes.append(
+            "ML keyword annotations: not present in this response "
+            "(hashtags/dominant interest, if any, are shown separately)"
+        )
 
     created_at = _first(pin.get("created_at"))
 
@@ -495,6 +517,8 @@ def parse_pin_data(raw: dict[str, Any], pin_id_hint: str | None = None) -> PinDa
         comment_count=comment_count,
         comments=comments,
         annotations=annotations,
+        hashtags=hashtags,
+        dominant_interest=dominant_interest,
         notes=notes,
     )
 
