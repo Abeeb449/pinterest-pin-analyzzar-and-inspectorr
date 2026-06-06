@@ -263,6 +263,70 @@ class PinterestClient:
 
             raise BlockedError(f"GET {url} failed after retries: {last_exc}")
 
+    async def post_multipart(
+        self,
+        path: str,
+        *,
+        files: dict,
+        data: dict | None = None,
+        anonymous: bool = False,
+    ) -> httpx.Response:
+        """POST multipart form data (e.g. an image upload).
+
+        Single attempt with conservative throttle — uploads are write-like and
+        we deliberately do NOT hammer them with retries. `anonymous=True` uses
+        the cookie-free client so an upload need not touch the session.
+        """
+        async with self._lock:
+            await self.warmup(anonymous=anonymous)
+            client = (
+                await self._ensure_anon_client()
+                if anonymous
+                else await self._ensure_client()
+            )
+            headers = {
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": PINTEREST_BASE + "/",
+                "Origin": PINTEREST_BASE,
+                **self._csrf_header(client),
+            }
+            await self._throttle()
+            return await client.post(path, files=files, data=data, headers=headers)
+
+    async def post_resource(
+        self,
+        resource_path: str,
+        *,
+        source_url: str,
+        data: str,
+        anonymous: bool = False,
+    ) -> httpx.Response:
+        """POST a Pinterest `/resource/.../create/` or query endpoint.
+
+        Used by visual search (the query step). Single retry-light attempt.
+        """
+        async with self._lock:
+            await self.warmup(anonymous=anonymous)
+            client = (
+                await self._ensure_anon_client()
+                if anonymous
+                else await self._ensure_client()
+            )
+            headers = {
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": PINTEREST_BASE + source_url,
+                "Origin": PINTEREST_BASE,
+                **self._csrf_header(client),
+            }
+            await self._throttle()
+            return await client.post(
+                resource_path,
+                content=f"source_url={source_url}&data={data}",
+                headers=headers,
+            )
+
 
 # Single shared instance for the app's lifetime (persistent session).
 _shared_client: PinterestClient | None = None

@@ -18,6 +18,11 @@
   const pinStatus = document.getElementById("pin-status");
   const pinResult = document.getElementById("pin-result");
 
+  const dropZone = document.getElementById("drop-zone");
+  const imageInput = document.getElementById("image-input");
+  const visualStatus = document.getElementById("visual-status");
+  const visualGrid = document.getElementById("visual-grid");
+
   // --- view + mode helpers ---
   function show(view) {
     loginView.classList.toggle("hidden", view !== "login");
@@ -190,9 +195,89 @@
     }
   }
 
+  // --- visual (reverse image) search ---
+  function setVisualStatus(kind, message) {
+    visualStatus.className = "status" + (kind ? " " + kind : "");
+    visualStatus.textContent = message || "";
+  }
+
+  function renderMatches(matches) {
+    if (!matches || !matches.length) {
+      visualGrid.classList.add("hidden");
+      visualGrid.innerHTML = "";
+      setVisualStatus("blocked", "No similar pins found.");
+      return;
+    }
+    visualGrid.innerHTML = matches
+      .map((m) => {
+        const img = m.image
+          ? `<img src="${esc(m.image)}" alt="" loading="lazy" />`
+          : `<div class="no-img">no image</div>`;
+        const board = m.board_name ? `<div class="grid-board">${esc(m.board_name)}</div>` : "";
+        return `<a class="grid-item" href="${esc(m.url || "#")}" target="_blank" rel="noopener">
+          ${img}${board}</a>`;
+      })
+      .join("");
+    visualGrid.classList.remove("hidden");
+  }
+
+  async function handleImage(file) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setVisualStatus("error", "Please choose an image file.");
+      return;
+    }
+    visualGrid.classList.add("hidden");
+    visualGrid.innerHTML = "";
+    setVisualStatus("loading", "Uploading & searching…");
+    try {
+      const fd = new FormData();
+      fd.append("image", file);
+      const res = await fetch("/api/visual", {
+        method: "POST",
+        credentials: "same-origin",
+        body: fd,
+      });
+      if (res.status === 401) {
+        show("login");
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.ok) {
+        setVisualStatus("", "");
+        renderMatches(data.matches);
+      } else {
+        const kind = data.status === "unavailable" ? "blocked" : "error";
+        setVisualStatus(kind, data.message || "Visual search failed.");
+      }
+    } catch (_) {
+      setVisualStatus("error", "Network error. Try again.");
+    }
+  }
+
   loginForm.addEventListener("submit", handleLogin);
   logoutBtn.addEventListener("click", handleLogout);
   pinForm.addEventListener("submit", handlePinLookup);
+
+  // Drag-and-drop + click-to-pick for the visual panel.
+  dropZone.addEventListener("click", () => imageInput.click());
+  imageInput.addEventListener("change", (e) => handleImage(e.target.files[0]));
+  ["dragenter", "dragover"].forEach((ev) =>
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dropZone.classList.add("dragover");
+    })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+    })
+  );
+  dropZone.addEventListener("drop", (e) => {
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    handleImage(file);
+  });
 
   checkSession();
 })();

@@ -7,20 +7,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import auth, config
+from app.pinterest import pin as pin_mod
+from app.pinterest import visual as visual_mod
+from app.pinterest.client import BlockedError, close_client, get_client
 
 
 def require_debug() -> None:
     """Gate debug endpoints: 404 (invisible) unless DEBUG_ENDPOINTS is set."""
     if not config.DEBUG_ENDPOINTS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-from app.pinterest import pin as pin_mod
-from app.pinterest.client import BlockedError, close_client, get_client
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -187,6 +189,58 @@ async def probe_resource(body: ResourceProbeRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "status": "error", "message": str(exc)})
     return JSONResponse({"ok": True, "raw": raw})
+
+
+@app.post("/api/visual", dependencies=[Depends(auth.require_auth)])
+async def visual_search_endpoint(image: UploadFile = File(...)) -> JSONResponse:
+    """Reverse image search. ISOLATED + anonymous-first.
+
+    Always returns 200 with a structured payload; on any failure it reports
+    the feature as unavailable rather than crashing.
+    """
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        return JSONResponse(
+            {"ok": False, "status": "bad_input", "message": "Please upload an image file."}
+        )
+
+    image_bytes = await image.read()
+    # Guard against oversized uploads (10 MB cap).
+    if len(image_bytes) > 10 * 1024 * 1024:
+        return JSONResponse(
+            {"ok": False, "status": "bad_input", "message": "Image too large (max 10 MB)."}
+        )
+    if not image_bytes:
+        return JSONResponse(
+            {"ok": False, "status": "bad_input", "message": "Empty image."}
+        )
+
+    client = get_client()
+    try:
+        # Anonymous-first: never touches the throwaway account.
+        matches = await visual_mod.visual_search(
+            image_bytes, content_type, client, anonymous=True
+        )
+    except visual_mod.VisualSearchUnavailable as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": "unavailable",
+                "message": (
+                    "Reverse image search is currently unavailable "
+                    "(Pinterest blocked it or changed its internals). "
+                    + str(exc)
+                ),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - never crash
+        return JSONResponse(
+            {"ok": False, "status": "error", "message": f"Unexpected error: {exc}"}
+        )
+
+    return JSONResponse(
+        {"ok": True, "status": "ok", "matches": [m.model_dump() for m in matches]}
+    )
 
 
 @app.get("/")

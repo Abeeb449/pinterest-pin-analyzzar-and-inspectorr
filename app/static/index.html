@@ -49,10 +49,15 @@
         <div id="pin-result" class="result hidden"></div>
       </section>
 
-      <!-- Panel 2: Find similar pins (wired in a later step) -->
+      <!-- Panel 2: Find similar pins (reverse image search) -->
       <section class="panel">
         <h2>Find similar pins</h2>
-        <p class="muted">Reverse image search arrives in a later step.</p>
+        <div id="drop-zone" class="drop-zone">
+          <p>Drop an image here, or <span class="link-like">choose a file</span></p>
+          <input id="image-input" type="file" accept="image/*" hidden />
+        </div>
+        <div id="visual-status" class="status" role="status"></div>
+        <div id="visual-grid" class="grid hidden"></div>
       </section>
     </main>
 
