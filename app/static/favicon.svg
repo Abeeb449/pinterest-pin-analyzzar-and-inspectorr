@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#e60023"/>
+  <!-- Stylised "P" glyph in white -->
+  <path d="M22 16h17c10 0 16 6 16 15s-6.5 16-17.5 16H30V48h-8V16z
+           M30 36h7.5c5 0 8-3 8-7s-3-7-8-7H30v14z"
+        fill="#ffffff"/>
+</svg>

@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -238,6 +238,14 @@ async def visual_search_endpoint(body: PinLookupRequest) -> JSONResponse:
 
 
 @app.get("/")
-def index() -> FileResponse:
-    """Serve the single-page frontend."""
-    return FileResponse(STATIC_DIR / "index.html")
+def index(request: Request) -> HTMLResponse:
+    """Serve the single-page frontend.
+
+    Substitutes __BASE_URL__ with the request's absolute origin so social
+    unfurls (og:image, twitter:image) resolve to a full URL on any domain.
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    host = request.headers.get("host", request.url.netloc)
+    base_url = f"{proto}://{host}"
+    return HTMLResponse(html.replace("__BASE_URL__", base_url))
